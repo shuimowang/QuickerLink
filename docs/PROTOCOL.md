@@ -1,0 +1,78 @@
+# Quicker WebSocket protocol notes
+
+Quicker Link implements the protocol documented by Quicker's [WebSocket service documentation](https://getquicker.net/KC/Manual/Doc/websocketservice). The HTTP push API is a separate, cloud-relayed interface and is not used by this project.
+
+Quicker's documentation warns that it can lag behind current software. Items below are separated into the documented wire format and Quicker Link's defensive compatibility choices; they are not claims of an additional official protocol guarantee.
+
+## Endpoint
+
+```text
+ws://<computer-ip>:<port>/ws
+wss://<dashed-computer-ip>.lan.quicker.cc:<port>/ws
+```
+
+For example:
+
+```text
+wss://192-168-1-56.lan.quicker.cc:668/ws
+```
+
+The WSS hostname is retained for TLS SNI and hostname validation. Quicker Link's custom DNS implementation maps only valid `<IPv4>.lan.quicker.cc` names back to the encoded IPv4 and delegates all other lookups to the system resolver.
+
+The configured port is required. One official WSS example omits it, but the explanatory text and official sample client both include it. Quicker's example client commonly defaults to `668`; the actual WebSocket port configured on the computer remains authoritative.
+
+## Message types
+
+| Type | Meaning |
+|---:|---|
+| `2` | Command request or server push |
+| `4` | Command response |
+| `5` | Authentication request |
+| `6` | Authentication response |
+
+Authentication request:
+
+```json
+{"messageType":5,"serial":1,"data":"verification-code"}
+```
+
+Authentication is a verification-code exchange after the WebSocket opens, not an account login or durable device-pairing protocol. If Quicker has no verification code configured, it documents sending an unsolicited successful type `6` response with `replyTo: 0`. Quicker Link waits for that response before becoming ready.
+
+Action request:
+
+```json
+{
+  "messageType": 2,
+  "serial": 2,
+  "operation": "action",
+  "action": "Action name or ID",
+  "data": "input parameter",
+  "wait": true
+}
+```
+
+Response:
+
+```json
+{
+  "messageType": 4,
+  "replyTo": 2,
+  "isSuccess": true,
+  "data": "result"
+}
+```
+
+The official schema associates responses through `replyTo`, although some file-transfer examples contain conflicting casing and correlation values. Quicker Link gives every outgoing request a unique `serial`, accepts response field names case-insensitively, fails pending requests when the connection closes, and never replays commands automatically.
+
+The WebSocket document defines `wait` but does not define the HTTP push API's `maxWaitMs` field for this transport. Quicker Link therefore applies a local 30-second command timeout instead of sending `maxWaitMs`.
+
+Quicker documents `copy`, `paste`, `action`, `open`, keyboard/text input, input scripts, downloads, file transfer, and image paste operations across the WebSocket and related push documentation. This preview intentionally exposes only its documented feature subset; mentioning an operation here does not mean it is implemented.
+
+## Compatibility decisions
+
+- Outgoing fields always use lower camel case.
+- Incoming fields are matched case-insensitively because official examples use both `messageType` and `MessageType` styles.
+- Unknown message types and binary messages are logged without execution.
+- Incoming `copy` commands write text to the Android clipboard. When the request includes a serial, Quicker Link sends a type `4` response as an interoperability choice; the official document does not fully specify client acknowledgements for server-pushed commands.
+- File transfer and `pasteimage` are intentionally unsupported until their framing and response behavior are validated against current Quicker versions. The document names `pasteimage` without defining its payload.
+- The official document does not specify heartbeat frames, idle timeouts, close-code semantics, retry policy, session resumption, or whether side-effecting commands are safe to replay. Quicker Link uses transport pings and exponential backoff with a 30-second delay cap plus jitter, then performs authentication again after reconnecting.
