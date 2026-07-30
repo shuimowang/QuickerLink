@@ -34,7 +34,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
 
       - name: Test and lint without signing secrets
-        run: ./gradlew testDebugUnitTest lintDebug --no-daemon
+        run: ./gradlew testDebugUnitTest lintDebug --no-daemon --no-configuration-cache
 
       - name: Validate signing secrets
         env:
@@ -59,7 +59,7 @@ jobs:
           ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease --no-daemon
+        run: ./gradlew assembleRelease --no-daemon --no-configuration-cache
 
       - name: Verify tag, signature, and checksum
         shell: bash
