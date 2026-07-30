@@ -1,49 +1,51 @@
-name: Bug report
-description: Report a reproducible problem in Quicker Link
-title: "[Bug] "
+name: 问题反馈
+description: 反馈可以稳定复现的 Quicker Link 问题
+title: "[问题] "
 labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: Do not include verification codes, private action data, or other credentials.
+      value: 请勿提交连接验证码、配对二维码、私有动作数据或其他凭据。
   - type: input
     id: app-version
     attributes:
-      label: Quicker Link version
+      label: Quicker Link 版本
+      placeholder: 例如 0.2.0-alpha.2
     validations:
       required: true
   - type: input
     id: quicker-version
     attributes:
-      label: Quicker version
+      label: Quicker 版本
     validations:
       required: true
   - type: input
     id: android-version
     attributes:
-      label: Android version and device
+      label: Android 版本与手机型号
     validations:
       required: true
   - type: dropdown
-    id: transport
+    id: connection-method
     attributes:
-      label: Transport
-      options: [WSS, WS]
+      label: 使用场景
+      options: [扫描配对码, 自动查找, 手动连接, 动作同步或执行, 文本发送, 其他]
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
-      label: Reproduction steps
+      label: 复现步骤
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Expected behavior
+      label: 期望结果
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
-      label: Sanitized connection log
+      label: 已脱敏的连接记录
+      description: 请先删除地址、验证码、动作参数及其他隐私信息。

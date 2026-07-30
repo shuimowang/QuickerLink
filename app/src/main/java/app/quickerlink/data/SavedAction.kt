@@ -10,6 +10,7 @@ data class SavedAction(
     val confirmBeforeRun: Boolean = false,
     val quickerActionId: String? = null,
     val sourceGroup: String? = null,
+    val sourceScene: String? = null,
 )
 
 data class StoredConnection(

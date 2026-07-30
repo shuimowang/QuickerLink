@@ -9,6 +9,7 @@ import androidx.camera.core.UseCase
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.border
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -16,8 +17,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -25,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -33,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -58,6 +63,7 @@ import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeReader
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.delay
 import kotlin.math.min
 
 @Composable
@@ -69,6 +75,14 @@ internal fun PairingQrScannerDialog(
     var bindingError by remember { mutableStateOf<String?>(null) }
     var scanError by remember { mutableStateOf<String?>(null) }
     var scannerGeneration by remember { mutableIntStateOf(0) }
+    var cameraReady by remember { mutableStateOf(false) }
+
+    LaunchedEffect(scanError) {
+        if (scanError != null) {
+            delay(3_500)
+            scanError = null
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -85,7 +99,9 @@ internal fun PairingQrScannerDialog(
                         lifecycleOwner = lifecycleOwner,
                         onResult = onResult,
                         onInvalidCode = { scanError = it },
+                        onCameraReady = { cameraReady = true },
                         onBindingError = {
+                            cameraReady = false
                             scanError = null
                             bindingError = it
                         },
@@ -98,12 +114,53 @@ internal fun PairingQrScannerDialog(
                 ) {
                     if (bindingError == null) {
                         val frameSize = minOf(280.dp, maxWidth * 0.72f, maxHeight * 0.45f)
+                        val horizontalShade = (maxWidth - frameSize) / 2
+                        val verticalShade = (maxHeight - frameSize) / 2
+                        val shade = Color.Black.copy(alpha = 0.42f)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(verticalShade)
+                                .align(Alignment.TopCenter)
+                                .background(shade),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(verticalShade)
+                                .align(Alignment.BottomCenter)
+                                .background(shade),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .width(horizontalShade)
+                                .height(frameSize)
+                                .align(Alignment.CenterStart)
+                                .background(shade),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .width(horizontalShade)
+                                .height(frameSize)
+                                .align(Alignment.CenterEnd)
+                                .background(shade),
+                        )
                         Box(
                             modifier = Modifier
                                 .align(Alignment.Center)
                                 .size(frameSize)
-                                .border(3.dp, Color.White, RoundedCornerShape(8.dp)),
+                                .border(2.dp, Color.White, RoundedCornerShape(8.dp))
+                                .border(4.dp, Color.Black.copy(alpha = 0.48f), RoundedCornerShape(8.dp)),
                         )
+                        if (!cameraReady) {
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .size(32.dp),
+                                color = Color.White,
+                                strokeWidth = 3.dp,
+                            )
+                        }
                     }
                     Text(
                         text = "扫描配对码",
@@ -125,6 +182,7 @@ internal fun PairingQrScannerDialog(
                         CameraErrorPanel(
                             message = message,
                             onRetry = {
+                                cameraReady = false
                                 bindingError = null
                                 scanError = null
                                 scannerGeneration += 1
@@ -204,11 +262,13 @@ private fun CameraPreview(
     lifecycleOwner: androidx.lifecycle.LifecycleOwner,
     onResult: (String) -> Unit,
     onInvalidCode: (String) -> Unit,
+    onCameraReady: () -> Unit,
     onBindingError: (String) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val currentOnResult by rememberUpdatedState(onResult)
     val currentOnInvalidCode by rememberUpdatedState(onInvalidCode)
+    val currentOnCameraReady by rememberUpdatedState(onCameraReady)
     val currentOnBindingError by rememberUpdatedState(onBindingError)
     val previewView = remember {
         PreviewView(context).apply {
@@ -275,6 +335,7 @@ private fun CameraPreview(
                         requireNotNull(preview),
                         requireNotNull(analysis),
                     )
+                    currentOnCameraReady()
                 }.onFailure {
                     releaseCameraUseCases(provider, preview, analysis)
                     if (active.get()) currentOnBindingError(cameraErrorMessage(it))

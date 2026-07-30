@@ -17,14 +17,16 @@ import app.quickerlink.connection.QuickerDiscoveryRequest
 import app.quickerlink.connection.QuickerLanDiscovery
 import app.quickerlink.connection.QuickerPairingCode
 import app.quickerlink.connection.QuickerProtocol
-import app.quickerlink.connection.QuickerGlobalActionCatalog
-import app.quickerlink.connection.QuickerGlobalActionsProtocol
+import app.quickerlink.connection.QuickerPanelActionCatalog
+import app.quickerlink.connection.QuickerPanelActionsProtocol
 import app.quickerlink.connection.QuickerWebSocketEndpointProbe
 import app.quickerlink.data.AppPreferences
 import app.quickerlink.data.PreferenceWriteResult
 import app.quickerlink.data.QuickerPreferences
 import app.quickerlink.data.SavedAction
 import app.quickerlink.data.StoredConnection
+import app.quickerlink.update.GitHubUpdateChecker
+import app.quickerlink.update.UpdateCheckResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -64,15 +66,28 @@ data class QuickerUiState(
     val localNetworkPermissionGranted: Boolean = true,
     val localNetworkPermissionPermanentlyDenied: Boolean = false,
     val savedActions: List<SavedAction> = emptyList(),
-    val globalCatalogActionId: String = QuickerGlobalActionsProtocol.COMPANION_ACTION_ID,
-    val syncingGlobalActions: Boolean = false,
+    val catalogActionId: String = QuickerPanelActionsProtocol.COMPANION_ACTION_ID,
+    val syncingPanelActions: Boolean = false,
     val runningActionIds: Set<String> = emptySet(),
     val logs: List<EventLog> = emptyList(),
+    val appVersionName: String = BuildConfig.VERSION_NAME,
+    val updateState: AppUpdateState = AppUpdateState.Idle,
 )
 
 sealed interface UiNotice {
     data class Success(val message: String) : UiNotice
     data class Error(val message: String) : UiNotice
+}
+
+sealed interface AppUpdateState {
+    data object Idle : AppUpdateState
+    data object Checking : AppUpdateState
+    data object UpToDate : AppUpdateState
+    data class Available(
+        val versionName: String,
+        val pageUrl: String,
+    ) : AppUpdateState
+    data object Failed : AppUpdateState
 }
 
 internal class ConnectionSession(initialConfig: QuickerConnectionConfig?) {
@@ -137,34 +152,49 @@ internal fun QuickerUiState.startRunningAction(actionId: String): QuickerUiState
 internal fun QuickerUiState.finishRunningAction(actionId: String): QuickerUiState =
     copy(runningActionIds = runningActionIds - actionId)
 
-internal fun mergeGlobalActions(
+internal fun mergePanelActions(
     existing: List<SavedAction>,
-    catalog: QuickerGlobalActionCatalog,
+    catalog: QuickerPanelActionCatalog,
 ): List<SavedAction> {
-    val syncedByActionId = existing
-        .filter { it.quickerActionId != null }
-        .associateBy { it.quickerActionId.orEmpty().lowercase() }
-    val claimedLocalIds = hashSetOf<String>()
-    val synced = catalog.actions.map { remote ->
-        val previous = syncedByActionId[remote.id] ?: existing.firstOrNull { action ->
-            action.quickerActionId == null &&
-                action.id !in claimedLocalIds &&
-                action.actionTarget.equals(remote.id, ignoreCase = true)
+    val scenesByName = catalog.scenes.groupBy { it.scene }
+    require(
+        scenesByName.keys == setOf(
+            QuickerPanelActionsProtocol.GLOBAL_SCENE,
+            QuickerPanelActionsProtocol.COMMON_SCENE,
+        ) && scenesByName.values.all { it.size == 1 },
+    ) { "动作目录场景不完整" }
+    val orderedScenes = listOf(
+        scenesByName.getValue(QuickerPanelActionsProtocol.GLOBAL_SCENE).single(),
+        scenesByName.getValue(QuickerPanelActionsProtocol.COMMON_SCENE).single(),
+    )
+
+    val syncedByActionId = buildMap {
+        existing.forEach { action ->
+            action.quickerActionId?.lowercase()?.let { actionId ->
+                putIfAbsent(actionId, action)
+            }
         }
-        previous?.id?.let(claimedLocalIds::add)
-        SavedAction(
-            id = previous?.id ?: "quicker:${remote.id}",
-            label = remote.title,
-            actionTarget = remote.id,
-            parameter = previous?.parameter.orEmpty(),
-            confirmBeforeRun = previous?.confirmBeforeRun ?: false,
-            quickerActionId = remote.id,
-            sourceGroup = remote.group,
-        )
     }
-    val manual = existing.filter { action ->
-        action.quickerActionId == null && action.id !in claimedLocalIds
+    val seenRemoteActionIds = hashSetOf<String>()
+    val synced = orderedScenes.flatMap { scene ->
+        scene.actions.mapNotNull { remote ->
+            val actionId = remote.id.lowercase()
+            if (!seenRemoteActionIds.add(actionId)) return@mapNotNull null
+
+            val previous = syncedByActionId[actionId]
+            SavedAction(
+                id = previous?.id ?: "quicker:${remote.id}",
+                label = remote.title,
+                actionTarget = remote.id,
+                parameter = previous?.parameter.orEmpty(),
+                confirmBeforeRun = previous?.confirmBeforeRun ?: false,
+                quickerActionId = remote.id,
+                sourceGroup = remote.group,
+                sourceScene = scene.scene,
+            )
+        }
     }
+    val manual = existing.filter { it.quickerActionId == null }
     return synced + manual
 }
 
@@ -176,6 +206,7 @@ private fun StoredConnection.toReconnectConfigOrNull(): QuickerConnectionConfig?
 class QuickerViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences: QuickerPreferences = AppPreferences(application)
     private val connectionManager = QuickerConnectionManager()
+    private val updateChecker = GitHubUpdateChecker()
     private val subnetProvider = AndroidIpv4SubnetProvider(application)
     private val lanDiscovery = QuickerLanDiscovery(QuickerWebSocketEndpointProbe())
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
@@ -185,6 +216,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     private val connectionSession = ConnectionSession(knownGoodConnection.toReconnectConfigOrNull())
     private var appInForeground = false
     private var discoveryJob: Job? = null
+    private var syncPanelActionsAfterConnect = false
     private val mutableUiState = MutableStateFlow(
         QuickerUiState(
             ipAddress = knownGoodConnection.ipAddress,
@@ -192,8 +224,8 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             password = knownGoodConnection.password,
             rememberPassword = knownGoodConnection.rememberPassword,
             savedActions = preferences.loadActions(),
-            globalCatalogActionId = knownGoodConnection.serviceActionId
-                ?: QuickerGlobalActionsProtocol.COMPANION_ACTION_ID,
+            catalogActionId = knownGoodConnection.serviceActionId
+                ?: QuickerPanelActionsProtocol.COMPANION_ACTION_ID,
         ),
     )
     val uiState: StateFlow<QuickerUiState> = mutableUiState.asStateFlow()
@@ -404,17 +436,18 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 ipAddress = pairing.ipAddress,
                 port = pairing.port.toString(),
                 password = pairing.password,
-                globalCatalogActionId = pairing.serviceActionId
-                    ?: QuickerGlobalActionsProtocol.COMPANION_ACTION_ID,
+                catalogActionId = pairing.serviceActionId
+                    ?: QuickerPanelActionsProtocol.COMPANION_ACTION_ID,
                 discoveryState = QuickerDiscoveryState.Idle,
                 connectionError = null,
             )
         }
+        syncPanelActionsAfterConnect = true
         startConnection(
             config = QuickerConnectionConfig(pairing.ipAddress, pairing.port, pairing.password),
             rememberPassword = state.rememberPassword,
             serviceActionId = pairing.serviceActionId
-                ?: QuickerGlobalActionsProtocol.COMPANION_ACTION_ID,
+                ?: QuickerPanelActionsProtocol.COMPANION_ACTION_ID,
         )
     }
 
@@ -424,6 +457,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         connectionSession.onUserDisconnect()
+        syncPanelActionsAfterConnect = false
         mutableUiState.update { it.copy(connectionError = null) }
         connectionManager.disconnect()
     }
@@ -452,43 +486,45 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun syncGlobalActions() {
+    fun syncPanelActions() {
         val state = mutableUiState.value
         if (state.connectionState !is QuickerConnectionState.Ready) {
             mutableNotices.tryEmit(UiNotice.Error("请先连接 Quicker"))
             return
         }
-        if (state.syncingGlobalActions) return
+        if (state.syncingPanelActions) return
 
-        mutableUiState.update { it.copy(syncingGlobalActions = true) }
+        mutableUiState.update { it.copy(syncingPanelActions = true) }
         viewModelScope.launch {
             try {
                 val response = connectionManager.sendCommand(
                     operation = "action",
-                    action = state.globalCatalogActionId,
-                    data = QuickerGlobalActionsProtocol.LIST_COMMAND,
+                    action = state.catalogActionId,
+                    data = QuickerPanelActionsProtocol.LIST_COMMAND,
                     wait = true,
                 )
                 if (response.isSuccess == false) {
                     throw IllegalStateException(
                         response.message
                             ?: QuickerProtocol.displayData(response.data)
-                            ?: "Quicker 拒绝读取全局动作",
+                            ?: "Quicker 拒绝读取动作目录",
                     )
                 }
-                val catalog = QuickerGlobalActionsProtocol.parse(response.data)
+                val catalog = QuickerPanelActionsProtocol.parse(response.data)
                 mutableUiState.update { current ->
-                    val updated = mergeGlobalActions(current.savedActions, catalog)
+                    val updated = mergePanelActions(current.savedActions, catalog)
                     preferences.saveActions(updated)
                     current.copy(savedActions = updated)
                 }
-                mutableNotices.emit(UiNotice.Success("已同步 ${catalog.actions.size} 个全局动作"))
+                mutableNotices.emit(
+                    UiNotice.Success("已同步 ${catalog.actions.size} 个全局与通用动作"),
+                )
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
-                mutableNotices.emit(UiNotice.Error(error.message ?: "同步全局动作失败"))
+                mutableNotices.emit(UiNotice.Error(error.message ?: "同步动作失败"))
             } finally {
-                mutableUiState.update { it.copy(syncingGlobalActions = false) }
+                mutableUiState.update { it.copy(syncingPanelActions = false) }
             }
         }
     }
@@ -559,6 +595,38 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
     fun clearLogs() = mutableUiState.update { it.copy(logs = emptyList()) }
 
+    fun checkForUpdates() {
+        if (mutableUiState.value.updateState is AppUpdateState.Checking) return
+        mutableUiState.update { it.copy(updateState = AppUpdateState.Checking) }
+
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    updateChecker.check(BuildConfig.VERSION_NAME)
+                }
+                mutableUiState.update { state ->
+                    state.copy(
+                        updateState = when (result) {
+                            is UpdateCheckResult.Available -> AppUpdateState.Available(
+                                versionName = result.release.versionName,
+                                pageUrl = result.release.pageUrl,
+                            )
+                            is UpdateCheckResult.UpToDate -> AppUpdateState.UpToDate
+                        },
+                    )
+                }
+                if (result is UpdateCheckResult.UpToDate) {
+                    mutableNotices.emit(UiNotice.Success("当前已是最新版本"))
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                mutableUiState.update { it.copy(updateState = AppUpdateState.Failed) }
+                mutableNotices.emit(UiNotice.Error("暂时无法连接 GitHub，请稍后重试"))
+            }
+        }
+    }
+
     private suspend fun handleConnectionState(connectionState: QuickerConnectionState) {
         val errorMessage = when (connectionState) {
             is QuickerConnectionState.AuthFailed -> connectionState.reason
@@ -580,10 +648,19 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
 
         when (connectionState) {
-            is QuickerConnectionState.Ready -> persistAuthenticatedConnection()
+            is QuickerConnectionState.Ready -> {
+                persistAuthenticatedConnection()
+                if (syncPanelActionsAfterConnect) {
+                    syncPanelActionsAfterConnect = false
+                    syncPanelActions()
+                }
+            }
             is QuickerConnectionState.AuthFailed,
             is QuickerConnectionState.Error,
-            -> connectionSession.onAuthenticationFailed()
+            -> {
+                syncPanelActionsAfterConnect = false
+                connectionSession.onAuthenticationFailed()
+            }
 
             else -> Unit
         }
@@ -604,7 +681,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     private fun startConnection(
         config: QuickerConnectionConfig,
         rememberPassword: Boolean,
-        serviceActionId: String = mutableUiState.value.globalCatalogActionId,
+        serviceActionId: String = mutableUiState.value.catalogActionId,
     ) {
         val connectionToPersist = StoredConnection(
             ipAddress = config.ipAddress,
@@ -619,6 +696,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             connectionSession.beginUserConnection(config, connectionToPersist)
             connectionManager.connect(config)
         }.onFailure { error ->
+            syncPanelActionsAfterConnect = false
             connectionSession.connectionStartRejected()
             mutableUiState.update { it.copy(connectionError = error.message ?: "连接设置不正确") }
         }
@@ -692,6 +770,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     override fun onCleared() {
         discoveryJob?.cancel()
         connectionManager.close()
+        updateChecker.close()
     }
 
     private companion object {

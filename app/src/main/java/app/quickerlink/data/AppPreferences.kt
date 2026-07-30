@@ -40,7 +40,8 @@ class AppPreferences(context: Context) : QuickerPreferences {
     private val gson = Gson()
 
     override fun loadConnection(): StoredConnection {
-        val rememberPassword = preferences.getBoolean(KEY_REMEMBER_PASSWORD, false)
+        // New installations default to seamless reconnect; an explicit opt-out is persisted as false.
+        val rememberPassword = preferences.getBoolean(KEY_REMEMBER_PASSWORD, true)
         return StoredConnection(
             ipAddress = preferences.getString(KEY_IP_ADDRESS, "").orEmpty(),
             port = preferences.getInt(KEY_PORT, 668),

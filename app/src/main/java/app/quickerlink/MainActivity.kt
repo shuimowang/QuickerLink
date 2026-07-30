@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -14,6 +15,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -64,6 +66,7 @@ class MainActivity : ComponentActivity() {
                     cameraPermissionPermanentlyDenied = cameraPermissionPermanentlyDenied.value,
                     onRequestCameraPermission = ::requestCameraPermission,
                     onOpenAppSettings = ::openAppSettings,
+                    onOpenExternalUrl = ::openExternalUrl,
                 )
             }
         }
@@ -108,6 +111,29 @@ class MainActivity : ComponentActivity() {
                 Uri.fromParts("package", packageName, null),
             ),
         )
+    }
+
+    private fun openExternalUrl(value: String) {
+        val uri = value.toUri()
+        val host = uri.host?.lowercase().orEmpty()
+        val path = uri.path.orEmpty()
+        val allowed = uri.scheme.equals("https", ignoreCase = true) && when (host) {
+            "github.com" -> path.startsWith("/shuimowang/QuickerLink")
+            "getquicker.net" -> path.startsWith("/User/Actions/743590-")
+            else -> false
+        }
+        if (!allowed) {
+            Toast.makeText(this, "无法打开这个链接", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        runCatching {
+            startActivity(
+                Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE),
+            )
+        }.onFailure {
+            Toast.makeText(this, "没有可用的浏览器", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private companion object {

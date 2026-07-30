@@ -16,7 +16,7 @@ On Windows, clone the repository to a path containing only ASCII characters. Gra
 
 ## Pull requests
 
-- Keep protocol changes compatible with both lower camel case and legacy PascalCase response fields.
+- Keep Quicker official WebSocket envelope parsing compatible with both lower camel case and PascalCase response fields. This does not imply backward compatibility for Quicker Link catalog versions.
 - Do not disable TLS certificate or hostname validation.
 - Do not add analytics, advertising, or cloud services without prior discussion.
 - Add focused tests for URL validation and protocol serialization changes.

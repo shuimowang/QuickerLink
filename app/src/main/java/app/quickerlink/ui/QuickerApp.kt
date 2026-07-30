@@ -2,6 +2,7 @@ package app.quickerlink.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
@@ -31,6 +34,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.MoreVert
@@ -53,7 +57,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -83,6 +87,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -98,12 +106,14 @@ import app.quickerlink.QuickerDiscoveryState
 import app.quickerlink.QuickerViewModel
 import app.quickerlink.UiNotice
 import app.quickerlink.connection.QuickerConnectionState
+import app.quickerlink.connection.QuickerEndpoint
 import app.quickerlink.connection.QuickerEventDirection
 import app.quickerlink.data.SavedAction
 
 private enum class MainDestination(val label: String, val icon: ImageVector) {
     ACTIONS("动作", Icons.Outlined.Bolt),
     CONNECTION("连接", Icons.Outlined.Settings),
+    ABOUT("关于", Icons.Outlined.Info),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -115,6 +125,7 @@ fun QuickerApp(
     cameraPermissionPermanentlyDenied: Boolean,
     onRequestCameraPermission: () -> Unit,
     onOpenAppSettings: () -> Unit,
+    onOpenExternalUrl: (String) -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -169,14 +180,14 @@ fun QuickerApp(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             if (destination == MainDestination.ACTIONS) {
-                ExtendedFloatingActionButton(
+                FloatingActionButton(
                     onClick = {
                         editedAction = null
                         showActionEditor = true
                     },
-                    icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                    text = { Text("添加动作") },
-                )
+                ) {
+                    Icon(Icons.Outlined.Add, contentDescription = "添加动作")
+                }
             }
         },
     ) { innerPadding ->
@@ -185,7 +196,7 @@ fun QuickerApp(
                 state = state,
                 contentPadding = innerPadding,
                 onOpenConnection = { destination = MainDestination.CONNECTION },
-                onSyncGlobalActions = viewModel::syncGlobalActions,
+                onSyncPanelActions = viewModel::syncPanelActions,
                 onRun = viewModel::runAction,
                 onEdit = { action ->
                     editedAction = action
@@ -219,6 +230,13 @@ fun QuickerApp(
                 onSendText = viewModel::sendText,
                 onClearLogs = viewModel::clearLogs,
             )
+
+            MainDestination.ABOUT -> AboutScreen(
+                state = state,
+                contentPadding = innerPadding,
+                onCheckForUpdates = viewModel::checkForUpdates,
+                onOpenExternalUrl = onOpenExternalUrl,
+            )
         }
     }
 
@@ -246,29 +264,64 @@ fun QuickerApp(
 
 @Composable
 private fun ConnectionStatusIcon(state: QuickerConnectionState) {
-    val (icon, tint, description) = when (state) {
-        is QuickerConnectionState.Ready -> Triple(
-            Icons.Outlined.Wifi,
-            MaterialTheme.colorScheme.primary,
-            "已连接",
-        )
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .semantics { contentDescription = connectionStateDescription(state) },
+        contentAlignment = Alignment.Center,
+    ) {
+        ConnectionStateGraphic(state = state, modifier = Modifier.size(22.dp))
+    }
+}
 
+@Composable
+private fun ConnectionStateGraphic(
+    state: QuickerConnectionState,
+    modifier: Modifier = Modifier,
+) {
+    when (state) {
         is QuickerConnectionState.Connecting,
         QuickerConnectionState.Authenticating,
         is QuickerConnectionState.Reconnecting,
-        -> Triple(Icons.Outlined.Sync, MaterialTheme.colorScheme.secondary, "连接中")
+        -> CircularProgressIndicator(
+            modifier = modifier,
+            color = MaterialTheme.colorScheme.secondary,
+            strokeWidth = 2.5.dp,
+        )
+
+        is QuickerConnectionState.Ready -> Icon(
+            Icons.Outlined.Wifi,
+            contentDescription = null,
+            modifier = modifier,
+            tint = MaterialTheme.colorScheme.primary,
+        )
 
         is QuickerConnectionState.AuthFailed,
         is QuickerConnectionState.Error,
-        -> Triple(Icons.Outlined.ErrorOutline, MaterialTheme.colorScheme.error, "连接异常")
+        -> Icon(
+            Icons.Outlined.ErrorOutline,
+            contentDescription = null,
+            modifier = modifier,
+            tint = MaterialTheme.colorScheme.error,
+        )
 
-        QuickerConnectionState.Disconnected -> Triple(
+        QuickerConnectionState.Disconnected -> Icon(
             Icons.Outlined.WifiOff,
-            MaterialTheme.colorScheme.onSurfaceVariant,
-            "未连接",
+            contentDescription = null,
+            modifier = modifier,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
-    Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.padding(horizontal = 16.dp))
+}
+
+private fun connectionStateDescription(state: QuickerConnectionState): String = when (state) {
+    is QuickerConnectionState.Ready -> "已连接"
+    is QuickerConnectionState.Connecting -> "正在连接"
+    QuickerConnectionState.Authenticating -> "正在认证"
+    is QuickerConnectionState.Reconnecting -> "正在重连"
+    is QuickerConnectionState.AuthFailed -> "认证失败"
+    is QuickerConnectionState.Error -> "连接异常"
+    QuickerConnectionState.Disconnected -> "未连接"
 }
 
 @Composable
@@ -276,13 +329,18 @@ private fun ActionsScreen(
     state: QuickerUiState,
     contentPadding: PaddingValues,
     onOpenConnection: () -> Unit,
-    onSyncGlobalActions: () -> Unit,
+    onSyncPanelActions: () -> Unit,
     onRun: (SavedAction) -> Unit,
     onEdit: (SavedAction) -> Unit,
     onDelete: (SavedAction) -> Unit,
 ) {
     var pendingConfirmation by remember { mutableStateOf<SavedAction?>(null) }
     var pendingDelete by remember { mutableStateOf<SavedAction?>(null) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    val actionSections = remember(state.savedActions, searchQuery) {
+        buildActionListSections(state.savedActions, searchQuery)
+    }
+    val visibleActionCount = actionSections.sumOf { it.actions.size }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -297,28 +355,52 @@ private fun ActionsScreen(
         item {
             ConnectionSummary(
                 state = state.connectionState,
-                syncingGlobalActions = state.syncingGlobalActions,
+                syncingPanelActions = state.syncingPanelActions,
+                actionCount = state.savedActions.count { it.quickerActionId != null },
                 onOpenConnection = onOpenConnection,
-                onSyncGlobalActions = onSyncGlobalActions,
+                onSyncPanelActions = onSyncPanelActions,
             )
         }
 
         if (state.savedActions.isEmpty()) {
             item {
-                EmptyActions()
+                EmptyActions(
+                    connected = state.connectionState is QuickerConnectionState.Ready,
+                    syncing = state.syncingPanelActions,
+                    onOpenConnection = onOpenConnection,
+                    onSyncPanelActions = onSyncPanelActions,
+                )
             }
         } else {
-            items(state.savedActions, key = SavedAction::id) { action ->
-                SavedActionItem(
-                    action = action,
-                    enabled = state.connectionState is QuickerConnectionState.Ready,
-                    running = action.id in state.runningActionIds,
-                    onRun = {
-                        if (action.confirmBeforeRun) pendingConfirmation = action else onRun(action)
-                    },
-                    onEdit = { onEdit(action) },
-                    onDelete = { pendingDelete = action },
+            item {
+                ActionLibraryHeader(
+                    totalCount = state.savedActions.size,
+                    visibleCount = visibleActionCount,
+                    query = searchQuery,
+                    onQueryChange = { searchQuery = it },
                 )
+            }
+
+            if (actionSections.isEmpty()) {
+                item { EmptySearchResults(onClear = { searchQuery = "" }) }
+            } else {
+                actionSections.forEach { section ->
+                    item(key = "section:${section.key}") {
+                        ActionGroupHeader(section.title, section.actions.size)
+                    }
+                    items(section.actions, key = SavedAction::id) { action ->
+                        SavedActionItem(
+                            action = action,
+                            enabled = state.connectionState is QuickerConnectionState.Ready,
+                            running = action.id in state.runningActionIds,
+                            onRun = {
+                                if (action.confirmBeforeRun) pendingConfirmation = action else onRun(action)
+                            },
+                            onEdit = { onEdit(action) },
+                            onDelete = { pendingDelete = action },
+                        )
+                    }
+                }
             }
         }
     }
@@ -374,9 +456,10 @@ private fun ActionsScreen(
 @Composable
 private fun ConnectionSummary(
     state: QuickerConnectionState,
-    syncingGlobalActions: Boolean,
+    syncingPanelActions: Boolean,
+    actionCount: Int,
     onOpenConnection: () -> Unit,
-    onSyncGlobalActions: () -> Unit,
+    onSyncPanelActions: () -> Unit,
 ) {
     val (title, detail, color) = when (state) {
         is QuickerConnectionState.Ready -> Triple("已连接", state.endpoint, MaterialTheme.colorScheme.primary)
@@ -403,10 +486,9 @@ private fun ConnectionSummary(
                 .padding(top = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                if (state is QuickerConnectionState.Ready) Icons.Outlined.CheckCircle else Icons.Outlined.LinkOff,
-                contentDescription = null,
-                tint = color,
+            ConnectionStateGraphic(
+                state = state,
+                modifier = Modifier.size(24.dp),
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
@@ -427,41 +509,153 @@ private fun ConnectionSummary(
                 Text("设置")
             }
         }
-        TextButton(
-            onClick = onSyncGlobalActions,
-            modifier = Modifier.fillMaxWidth(),
-            enabled = state is QuickerConnectionState.Ready && !syncingGlobalActions,
-        ) {
-            if (syncingGlobalActions) {
-                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-            } else {
-                Icon(Icons.Outlined.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+        if (actionCount > 0 && state is QuickerConnectionState.Ready) {
+            TextButton(
+                onClick = onSyncPanelActions,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !syncingPanelActions,
+            ) {
+                if (syncingPanelActions) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Outlined.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("刷新面板动作 ($actionCount)")
             }
-            Spacer(Modifier.width(8.dp))
-            Text("同步全局动作")
         }
     }
     HorizontalDivider()
 }
 
 @Composable
-private fun EmptyActions() {
+private fun EmptyActions(
+    connected: Boolean,
+    syncing: Boolean,
+    onOpenConnection: () -> Unit,
+    onSyncPanelActions: () -> Unit,
+) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(260.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             Icon(
                 Icons.Outlined.Bolt,
                 contentDescription = null,
                 modifier = Modifier.size(44.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(12.dp))
-            Text("还没有已保存动作", style = MaterialTheme.typography.titleMedium)
+            Text("还没有动作快捷项", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (connected) "从电脑同步全局与通用动作即可开始" else "先连接电脑，再同步全局与通用动作",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(
+                onClick = if (connected) onSyncPanelActions else onOpenConnection,
+                enabled = !syncing,
+            ) {
+                if (syncing) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        if (connected) Icons.Outlined.Sync else Icons.Outlined.Link,
+                        contentDescription = null,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(if (connected) "获取面板动作" else "连接 Quicker")
+            }
         }
+    }
+}
+
+@Composable
+private fun ActionLibraryHeader(
+    totalCount: Int,
+    visibleCount: Int,
+    query: String,
+    onQueryChange: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle("动作列表", modifier = Modifier.weight(1f))
+            Text(
+                if (query.isBlank()) "$totalCount 个" else "$visibleCount / $totalCount 个",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("搜索动作") },
+            leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+            trailingIcon = if (query.isNotEmpty()) {
+                {
+                    IconButton(onClick = { onQueryChange("") }) {
+                        Icon(Icons.Outlined.Close, contentDescription = "清除搜索")
+                    }
+                }
+            } else {
+                null
+            },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        )
+    }
+}
+
+@Composable
+private fun ActionGroupHeader(title: String, count: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 4.dp, top = 8.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            count.toString(),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun EmptySearchResults(onClear: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(200.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Outlined.Search,
+            contentDescription = null,
+            modifier = Modifier.size(36.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(10.dp))
+        Text("没有匹配的动作", style = MaterialTheme.typography.titleMedium)
+        TextButton(onClick = onClear) { Text("清除搜索") }
     }
 }
 
@@ -475,12 +669,24 @@ private fun SavedActionItem(
     onDelete: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val details = buildList {
+        add(if (action.quickerActionId != null) "${action.syncedSceneLabel()}动作" else action.actionTarget)
+        if (action.parameter.isNotEmpty()) add("有参数")
+        if (action.confirmBeforeRun) add("执行前确认")
+    }.joinToString(" · ")
 
     Card(
         onClick = onRun,
-        enabled = enabled && !running,
+        enabled = !running,
+        modifier = Modifier.semantics {
+            stateDescription = when {
+                running -> "正在执行"
+                enabled -> "可以执行"
+                else -> "Quicker 未连接"
+            }
+        },
         shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         Row(
             modifier = Modifier
@@ -495,7 +701,15 @@ private fun SavedActionItem(
                 if (running) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.5.dp)
                 } else {
-                    Icon(Icons.Outlined.PlayArrow, contentDescription = "执行", tint = MaterialTheme.colorScheme.primary)
+                    Icon(
+                        Icons.Outlined.PlayArrow,
+                        contentDescription = "执行",
+                        tint = if (enabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
                 }
             }
             Spacer(Modifier.width(8.dp))
@@ -508,11 +722,7 @@ private fun SavedActionItem(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    if (action.quickerActionId != null) {
-                        "全局 · ${action.sourceGroup?.takeIf(String::isNotBlank) ?: "未分组"}"
-                    } else {
-                        action.actionTarget
-                    },
+                    details,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -521,7 +731,7 @@ private fun SavedActionItem(
             }
             Box {
                 IconButton(onClick = { menuExpanded = true }) {
-                    Icon(Icons.Outlined.MoreVert, contentDescription = "更多")
+                    Icon(Icons.Outlined.MoreVert, contentDescription = "${action.label}的更多选项")
                 }
                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
                     DropdownMenuItem(
@@ -567,12 +777,14 @@ private fun ConnectionScreen(
     var textOperation by rememberSaveable { mutableStateOf("paste") }
     var textToSend by rememberSaveable { mutableStateOf("") }
     var advancedExpanded by rememberSaveable { mutableStateOf(false) }
+    var logsExpanded by rememberSaveable { mutableStateOf(false) }
     val connected = state.connectionState is QuickerConnectionState.Ready
     val discovering = state.discoveryState is QuickerDiscoveryState.Scanning
     val busy = state.connectionState is QuickerConnectionState.Connecting ||
         state.connectionState is QuickerConnectionState.Authenticating ||
         state.connectionState is QuickerConnectionState.Reconnecting ||
         discovering
+    val hasKnownEndpoint = QuickerEndpoint.isPrivateIpv4(state.ipAddress)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -584,7 +796,14 @@ private fun ConnectionScreen(
         ),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item { SectionTitle("连接设置") }
+        item { SectionTitle("连接 Quicker") }
+
+        item {
+            ConnectionStatePanel(
+                connectionState = state.connectionState,
+                discoveryState = state.discoveryState,
+            )
+        }
 
         if (!state.localNetworkPermissionGranted) {
             item {
@@ -596,105 +815,31 @@ private fun ConnectionScreen(
             }
         }
 
-        state.connectionError?.let { error ->
-            item { ConnectionErrorRow(error) }
-        }
-
-        when (val discovery = state.discoveryState) {
-            is QuickerDiscoveryState.Scanning -> item {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    shape = RoundedCornerShape(8.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Text("正在查找 Quicker", style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
+        state.connectionError
+            ?.takeUnless {
+                state.connectionState is QuickerConnectionState.AuthFailed ||
+                    state.connectionState is QuickerConnectionState.Error
+            }
+            ?.let { error ->
+                item { ConnectionErrorRow(error) }
             }
 
-            is QuickerDiscoveryState.Failed -> item { ConnectionErrorRow(discovery.reason) }
-            QuickerDiscoveryState.Idle -> Unit
+        (state.discoveryState as? QuickerDiscoveryState.Failed)?.let { failure ->
+            item { ConnectionErrorRow(failure.reason) }
         }
 
-        item {
-            OutlinedTextField(
-                value = state.password,
-                onValueChange = onPasswordChanged,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("连接验证码") },
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Outlined.Password, contentDescription = null) },
-                trailingIcon = {
-                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                        Icon(
-                            if (passwordVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                            contentDescription = if (passwordVisible) "隐藏验证码" else "显示验证码",
-                        )
-                    }
-                },
-                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                enabled = !busy && !connected,
-            )
-        }
-
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Checkbox(
-                    checked = state.rememberPassword,
-                    onCheckedChange = onRememberPasswordChanged,
-                    enabled = !busy && !connected,
-                )
-                Text("在此设备上加密保存验证码", modifier = Modifier.weight(1f))
-            }
-        }
-
-        item {
-            if (connected || busy) {
+        if (connected || busy) {
+            item {
                 OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Outlined.LinkOff, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(if (discovering) "取消查找" else if (busy) "取消连接" else "断开连接")
                 }
-            } else {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
+            }
+        } else {
+            if (!hasKnownEndpoint) {
+                item {
                     Button(
-                        onClick = if (state.ipAddress.isBlank()) onDiscover else onConnect,
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = state.localNetworkPermissionGranted,
-                    ) {
-                        Icon(
-                            if (state.ipAddress.isBlank()) Icons.Outlined.Search else Icons.Outlined.Link,
-                            contentDescription = null,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (state.ipAddress.isBlank()) "自动查找并连接" else "连接 Quicker")
-                    }
-                    if (state.ipAddress.isNotBlank()) {
-                        OutlinedButton(
-                            onClick = onDiscover,
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = state.localNetworkPermissionGranted,
-                        ) {
-                            Icon(Icons.Outlined.Search, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("查找其他电脑")
-                        }
-                    }
-                    OutlinedButton(
                         onClick = onScanPairingCode,
                         modifier = Modifier.fillMaxWidth(),
                         enabled = state.localNetworkPermissionGranted,
@@ -705,49 +850,112 @@ private fun ConnectionScreen(
                     }
                 }
             }
-        }
 
-        item {
-            TextButton(
-                onClick = { advancedExpanded = !advancedExpanded },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !busy && !connected,
-            ) {
-                Text("高级设置", modifier = Modifier.weight(1f))
-                Icon(
-                    if (advancedExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                    contentDescription = if (advancedExpanded) "收起" else "展开",
+            item {
+                OutlinedTextField(
+                    value = state.password,
+                    onValueChange = onPasswordChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("连接验证码") },
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Outlined.Password, contentDescription = null) },
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                if (passwordVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                                contentDescription = if (passwordVisible) "隐藏验证码" else "显示验证码",
+                            )
+                        }
+                    },
+                    visualTransformation = if (passwordVisible) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 )
+            }
+
+            item {
+                RememberConnectionRow(
+                    checked = state.rememberPassword,
+                    onCheckedChange = onRememberPasswordChanged,
+                )
+            }
+
+            item {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (hasKnownEndpoint) {
+                        Button(
+                            onClick = onConnect,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = state.localNetworkPermissionGranted,
+                        ) {
+                            Icon(Icons.Outlined.Link, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("连接 Quicker")
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = onDiscover,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = state.localNetworkPermissionGranted,
+                        ) {
+                            Icon(Icons.Outlined.Search, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("自动查找并连接")
+                        }
+                    }
+                    if (hasKnownEndpoint) {
+                        OutlinedButton(
+                            onClick = onScanPairingCode,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = state.localNetworkPermissionGranted,
+                        ) {
+                            Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("扫描新的配对码")
+                        }
+                    }
+                    if (hasKnownEndpoint) {
+                        TextButton(
+                            onClick = onDiscover,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = state.localNetworkPermissionGranted,
+                        ) {
+                            Icon(Icons.Outlined.Search, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("查找其他电脑")
+                        }
+                    }
+                }
             }
         }
 
-        if (advancedExpanded) {
+        if (!connected && !busy) {
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
-                        value = state.ipAddress,
-                        onValueChange = onIpChanged,
-                        modifier = Modifier.weight(1f),
-                        label = { Text("电脑 IPv4") },
-                        placeholder = { Text("192.168.1.56") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Decimal,
-                            imeAction = ImeAction.Next,
-                        ),
-                        enabled = !busy && !connected,
+                TextButton(
+                    onClick = { advancedExpanded = !advancedExpanded },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("高级设置", modifier = Modifier.weight(1f))
+                    Icon(
+                        if (advancedExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        contentDescription = if (advancedExpanded) "收起高级设置" else "展开高级设置",
                     )
-                    OutlinedTextField(
-                        value = state.port,
-                        onValueChange = onPortChanged,
-                        modifier = Modifier.width(104.dp),
-                        label = { Text("WSS 端口") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Number,
-                            imeAction = ImeAction.Next,
-                        ),
-                        enabled = !busy && !connected,
+                }
+            }
+
+            if (advancedExpanded) {
+                item {
+                    EndpointFields(
+                        ipAddress = state.ipAddress,
+                        port = state.port,
+                        onIpChanged = onIpChanged,
+                        onPortChanged = onPortChanged,
                     )
                 }
             }
@@ -784,43 +992,205 @@ private fun ConnectionScreen(
                 label = { Text("文本内容") },
                 minLines = 3,
                 maxLines = 6,
-                trailingIcon = {
-                    IconButton(
-                        onClick = { onSendText(textOperation, textToSend) },
-                        enabled = connected && textToSend.isNotEmpty(),
-                    ) {
-                        Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = "发送")
-                    }
-                },
             )
+        }
+
+        item {
+            Button(
+                onClick = { onSendText(textOperation, textToSend) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = connected && textToSend.isNotEmpty(),
+            ) {
+                Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (textOperation == "paste") "粘贴到电脑" else "复制到电脑剪贴板")
+            }
         }
 
         item {
             Spacer(Modifier.height(8.dp))
             HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionTitle("连接记录", modifier = Modifier.weight(1f))
-                IconButton(onClick = onClearLogs, enabled = state.logs.isNotEmpty()) {
-                    Icon(Icons.Outlined.ClearAll, contentDescription = "清空记录")
-                }
-            }
-        }
-
-        if (state.logs.isEmpty()) {
-            item {
+            Spacer(Modifier.height(8.dp))
+            TextButton(
+                onClick = { logsExpanded = !logsExpanded },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text(
-                    "暂无记录",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 12.dp),
+                    "连接记录${if (state.logs.isEmpty()) "" else " (${state.logs.size})"}",
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    if (logsExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    contentDescription = if (logsExpanded) "收起连接记录" else "展开连接记录",
                 )
             }
-        } else {
-            items(state.logs.take(30)) { log -> EventLogRow(log) }
+        }
+
+        if (logsExpanded) {
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "最近记录",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    IconButton(onClick = onClearLogs, enabled = state.logs.isNotEmpty()) {
+                        Icon(Icons.Outlined.ClearAll, contentDescription = "清空记录")
+                    }
+                }
+            }
+
+            if (state.logs.isEmpty()) {
+                item {
+                    Text(
+                        "暂无记录",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 12.dp),
+                    )
+                }
+            } else {
+                items(state.logs.take(30)) { log -> EventLogRow(log) }
+            }
         }
     }
+}
 
+@Composable
+private fun ConnectionStatePanel(
+    connectionState: QuickerConnectionState,
+    discoveryState: QuickerDiscoveryState,
+) {
+    val discovering = discoveryState as? QuickerDiscoveryState.Scanning
+    val (title, detail) = if (discovering != null) {
+        "正在查找 Quicker" to discovering.subnet
+    } else {
+        when (connectionState) {
+            QuickerConnectionState.Disconnected -> "尚未连接" to "等待选择一台电脑"
+            is QuickerConnectionState.Connecting -> "正在连接" to connectionState.endpoint
+            QuickerConnectionState.Authenticating -> "正在认证" to "等待 Quicker 确认连接"
+            is QuickerConnectionState.Ready -> "已连接" to connectionState.endpoint
+            is QuickerConnectionState.Reconnecting -> {
+                "正在重新连接" to "第 ${connectionState.attempt} 次尝试，${connectionState.delaySeconds} 秒后重试"
+            }
+            is QuickerConnectionState.AuthFailed -> "认证失败" to connectionState.reason
+            is QuickerConnectionState.Error -> "连接异常" to connectionState.reason
+        }
+    }
+    val (containerColor, contentColor) = when {
+        discovering != null -> MaterialTheme.colorScheme.secondaryContainer to
+            MaterialTheme.colorScheme.onSecondaryContainer
+        connectionState is QuickerConnectionState.Ready -> MaterialTheme.colorScheme.primaryContainer to
+            MaterialTheme.colorScheme.onPrimaryContainer
+        connectionState is QuickerConnectionState.AuthFailed || connectionState is QuickerConnectionState.Error -> {
+            MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.onErrorContainer
+        }
+        else -> MaterialTheme.colorScheme.surfaceContainerLow to MaterialTheme.colorScheme.onSurface
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = containerColor,
+        contentColor = contentColor,
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (discovering != null) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.5.dp)
+            } else {
+                ConnectionStateGraphic(connectionState, modifier = Modifier.size(24.dp))
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = contentColor.copy(alpha = 0.8f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RememberConnectionRow(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(
+                value = checked,
+                role = Role.Checkbox,
+                onValueChange = onCheckedChange,
+            )
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null)
+        Text("加密保存并自动连接", modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun EndpointFields(
+    ipAddress: String,
+    port: String,
+    onIpChanged: (String) -> Unit,
+    onPortChanged: (String) -> Unit,
+) {
+    @Composable
+    fun IpField(modifier: Modifier) {
+        OutlinedTextField(
+            value = ipAddress,
+            onValueChange = onIpChanged,
+            modifier = modifier,
+            label = { Text("电脑 IPv4") },
+            placeholder = { Text("192.168.1.56") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Decimal,
+                imeAction = ImeAction.Next,
+            ),
+        )
+    }
+
+    @Composable
+    fun PortField(modifier: Modifier) {
+        OutlinedTextField(
+            value = port,
+            onValueChange = onPortChanged,
+            modifier = modifier,
+            label = { Text("WSS 端口") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Number,
+                imeAction = ImeAction.Done,
+            ),
+        )
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        if (maxWidth < 360.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                IpField(Modifier.fillMaxWidth())
+                PortField(Modifier.fillMaxWidth())
+            }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                IpField(Modifier.weight(1f))
+                PortField(Modifier.width(116.dp))
+            }
+        }
+    }
 }
 
 @Composable
@@ -835,18 +1205,33 @@ private fun PermissionRow(
         contentColor = MaterialTheme.colorScheme.onErrorContainer,
         shape = RoundedCornerShape(8.dp),
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Outlined.ErrorOutline, contentDescription = null)
-            Spacer(Modifier.width(12.dp))
-            Text(
-                if (permanentlyDenied) "局域网权限已被永久拒绝" else "需要局域网权限才能连接电脑",
-                modifier = Modifier.weight(1f),
-            )
-            TextButton(onClick = if (permanentlyDenied) onOpenAppSettings else onRequestPermission) {
-                Text(if (permanentlyDenied) "打开设置" else "授权")
+        BoxWithConstraints(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            val message = if (permanentlyDenied) {
+                "局域网权限已被永久拒绝"
+            } else {
+                "需要局域网权限才能连接电脑"
+            }
+            val action = if (permanentlyDenied) "打开设置" else "授权"
+            val onClick = if (permanentlyDenied) onOpenAppSettings else onRequestPermission
+
+            if (maxWidth < 340.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Icon(Icons.Outlined.ErrorOutline, contentDescription = null)
+                        Spacer(Modifier.width(10.dp))
+                        Text(message, modifier = Modifier.weight(1f))
+                    }
+                    TextButton(onClick = onClick, modifier = Modifier.align(Alignment.End)) {
+                        Text(action)
+                    }
+                }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.ErrorOutline, contentDescription = null)
+                    Spacer(Modifier.width(12.dp))
+                    Text(message, modifier = Modifier.weight(1f))
+                    TextButton(onClick = onClick) { Text(action) }
+                }
             }
         }
     }
@@ -949,11 +1334,18 @@ private fun ActionEditorDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .toggleable(
+                            value = confirm,
+                            role = Role.Switch,
+                            onValueChange = { confirm = it },
+                        )
+                        .padding(vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text("执行前确认", modifier = Modifier.weight(1f))
-                    Switch(checked = confirm, onCheckedChange = { confirm = it })
+                    Switch(checked = confirm, onCheckedChange = null)
                 }
             }
         },
@@ -970,6 +1362,7 @@ private fun ActionEditorDialog(
                             confirmBeforeRun = confirm,
                             quickerActionId = action?.quickerActionId,
                             sourceGroup = action?.sourceGroup,
+                            sourceScene = action?.sourceScene,
                         ),
                     )
                 },

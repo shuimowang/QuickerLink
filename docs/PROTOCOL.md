@@ -1,136 +1,35 @@
-# Quicker WebSocket protocol notes
+# Connection implementation notes
 
-Quicker Link implements the protocol documented by Quicker's [WebSocket service documentation](https://getquicker.net/KC/Manual/Doc/websocketservice). The HTTP push API is a separate, cloud-relayed interface and is not used by this project.
+Quicker Link follows Quicker's official [WebSocket service documentation](https://getquicker.net/KC/Manual/Doc/websocketservice). This document records the product's security and compatibility boundaries; it intentionally does not serve as a wire-level reproduction guide.
 
-Quicker's documentation warns that it can lag behind current software. Items below are separated into the documented wire format and Quicker Link's defensive compatibility choices; they are not claims of an additional official protocol guarantee.
+## Transport boundary
 
-## Endpoint
+- Connections use certificate-validated `WSS` only. The app does not expose or automatically fall back to cleartext `WS`.
+- Connection targets are restricted to private IPv4 addresses suitable for a trusted, mutually reachable LAN.
+- Authentication credentials are sent only after a candidate has completed the validated secure handshake.
+- Side-effecting commands are never replayed automatically after a reconnect.
 
-```text
-wss://<dashed-computer-ip>.lan.quicker.cc:<port>/ws
-```
+## Discovery and pairing
 
-For example:
+Quicker does not currently expose a documented LAN discovery service. The app therefore uses a bounded local search with fixed candidate, concurrency, and timeout limits. Discovery probes do not contain the connection verification code, and automatic authentication proceeds only when the completed search has one unambiguous candidate.
 
-```text
-wss://192-168-1-56.lan.quicker.cc:668/ws
-```
+The dedicated Quicker Link pairing code is generated locally by the companion action and is validated on the phone before use. It contains the information needed to establish the local connection, including the Quicker verification code, so it must be treated as a credential and never shared or retained as a screenshot.
 
-The WSS hostname is retained for TLS SNI and hostname validation. Quicker Link's custom DNS implementation maps only valid `<IPv4>.lan.quicker.cc` names back to the encoded IPv4 and delegates all other lookups to the system resolver.
+Quicker's cloud-push QR code belongs to a separate service and cannot be used for local Quicker Link pairing.
 
-Although Quicker also documents cleartext `ws://` endpoints, Quicker Link intentionally supports only WSS and never downgrades automatically.
+## Action catalog
 
-## LAN discovery
+The companion action provides a narrowly scoped catalog of the global and common new panels. The catalog contains only the action identity, source panel, and display metadata needed by the phone; it excludes action source code, internal parameters, application-specific panels, and the companion action itself.
 
-Quicker does not document a LAN discovery broadcast or mDNS service. Quicker Link therefore derives bounded candidates from an available Wi-Fi or Ethernet private IPv4 subnet and probes only the configured WSS port. Discovery performs certificate and hostname validated WebSocket handshakes without sending the verification code. After a complete scan, exactly one candidate may proceed to the normal type `5`/`6` authentication flow; zero or multiple candidates require QR pairing or a manual private IPv4 address.
+The Android client applies strict size, identity, grouping, ordering, and error-envelope validation before replacing synchronized entries. Existing manual entries and phone-side confirmation or parameter settings remain local. The app and companion action must use the same current catalog generation; older catalog responses are rejected, and no synchronized entry is changed unless the complete response passes validation.
 
-The WSS handshake is not treated as a durable device identity. Users on an untrusted network should use a locally generated pairing QR code or verify the computer address manually.
+This catalog filter limits what Quicker Link displays. It does not change the permission boundary of Quicker's authenticated WebSocket service, so the connection should remain limited to a trusted LAN and protected by a verification code.
 
-## Pairing QR code
+## Compatibility policy
 
-Quicker Link's pairing format is independent from Quicker's cloud push QR code:
+- Incoming responses are correlated to the request that created them and are bounded by local timeouts.
+- Unknown or unsupported input is not executed implicitly.
+- Binary payloads, file transfer, image transfer, and other unverified operations are intentionally outside the current feature set.
+- Disconnects fail pending work, then reconnect through a fresh secure authentication flow when the user has chosen to save the connection.
 
-```text
-quickerlink://pair?v=1&ip=192.168.1.56&port=668&code=<percent-encoded-verification-code>&serviceActionId=<GUID>
-```
-
-The parser requires schema version `1`, a private IPv4 address, a valid port, bounded control-character-free credentials, unique known fields, and implicit WSS transport. `serviceActionId` is an optional canonical GUID for backward compatibility with older or manually generated codes; the companion action always includes its current action ID. HTTP(S), cloud push, public-IP, cleartext-WS, and unknown-version payloads are rejected.
-
-The configured port is required. One official WSS example omits it, but the explanatory text and official sample client both include it. Quicker's example client commonly defaults to `668`; the actual WebSocket port configured on the computer remains authoritative.
-
-The repository includes a companion Quicker action under [`quicker`](../quicker). It reads `WebsocketServerSettings` from the running Quicker instance, requires secure transport, selects from active private IPv4 addresses, and generates this payload locally with Quicker's bundled QRCoder library. It does not create a second credential or change the configured verification code.
-
-## Message types
-
-| Type | Meaning |
-|---:|---|
-| `2` | Command request or server push |
-| `4` | Command response |
-| `5` | Authentication request |
-| `6` | Authentication response |
-
-Authentication request:
-
-```json
-{"messageType":5,"serial":1,"data":"verification-code"}
-```
-
-Authentication is a verification-code exchange after the WebSocket opens, not an account login or durable device-pairing protocol. If Quicker has no verification code configured, it documents sending an unsolicited successful type `6` response with `replyTo: 0`. Quicker Link waits for that response before becoming ready.
-
-Action request:
-
-```json
-{
-  "messageType": 2,
-  "serial": 2,
-  "operation": "action",
-  "action": "Action name or ID",
-  "data": "input parameter",
-  "wait": true
-}
-```
-
-Response:
-
-```json
-{
-  "messageType": 4,
-  "replyTo": 2,
-  "isSuccess": true,
-  "data": "result"
-}
-```
-
-## Global action catalog
-
-The companion action defines a Quicker Link-specific catalog command on top of Quicker's normal `action` operation. It is not an additional official Quicker protocol:
-
-```json
-{
-  "messageType": 2,
-  "serial": 3,
-  "operation": "action",
-  "action": "<serviceActionId from the pairing code>",
-  "data": "quickerlink:list-global-actions:v1",
-  "wait": true
-}
-```
-
-Quicker returns the action result in the outer response's `data` field as a JSON string. After decoding that string, a successful catalog has this form:
-
-```json
-{
-  "protocol": "quickerlink.global-actions",
-  "version": 1,
-  "ok": true,
-  "scene": "_global",
-  "groups": ["常用"],
-  "actions": [
-    {
-      "id": "11111111-1111-4111-8111-111111111111",
-      "title": "打开项目",
-      "group": "常用",
-      "order": 4
-    }
-  ]
-}
-```
-
-`groups` preserves the explicit Quicker panel group order. `group` is `null` for an ungrouped action, and `order` is the original `_global` panel entry index, so gaps are valid. The service excludes itself, uses the first placement when one action is placed more than once, caps the result at 500 actions and 100 groups, and returns no source code, internal parameters, icons, or app-specific actions.
-
-Errors use the same protocol and version with `ok:false`, a stable `code`, and a bounded human-readable `error`. The Android client validates payload size, UUIDs, group references, and strictly increasing original order before replacing its synchronized entries. Manual entries remain untouched.
-
-The official schema associates responses through `replyTo`, although some file-transfer examples contain conflicting casing and correlation values. Quicker Link gives every outgoing request a unique `serial`, accepts response field names case-insensitively, fails pending requests when the connection closes, and never replays commands automatically.
-
-The WebSocket document defines `wait` but does not define the HTTP push API's `maxWaitMs` field for this transport. Quicker Link therefore applies a local 30-second command timeout instead of sending `maxWaitMs`.
-
-Quicker documents `copy`, `paste`, `action`, `open`, keyboard/text input, input scripts, downloads, file transfer, and image paste operations across the WebSocket and related push documentation. This preview intentionally exposes only its documented feature subset; mentioning an operation here does not mean it is implemented.
-
-## Compatibility decisions
-
-- Outgoing fields always use lower camel case.
-- Incoming fields are matched case-insensitively because official examples use both `messageType` and `MessageType` styles.
-- Unknown message types and binary messages are logged without execution.
-- Incoming `copy` commands write text to the Android clipboard. When the request includes a serial, Quicker Link sends a type `4` response as an interoperability choice; the official document does not fully specify client acknowledgements for server-pushed commands.
-- File transfer and `pasteimage` are intentionally unsupported until their framing and response behavior are validated against current Quicker versions. The document names `pasteimage` without defining its payload.
-- The official document does not specify heartbeat frames, idle timeouts, close-code semantics, retry policy, session resumption, or whether side-effecting commands are safe to replay. Quicker Link uses transport pings and exponential backoff with a 30-second delay cap plus jitter, then performs authentication again after reconnecting.
+The implementation may evolve as Quicker changes. Security-sensitive behavior is covered by focused tests and should be reviewed from the exact tagged source corresponding to a published APK.

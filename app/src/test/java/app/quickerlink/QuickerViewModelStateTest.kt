@@ -1,9 +1,11 @@
 package app.quickerlink
 
+import app.quickerlink.connection.QuickerPanelScene
 import app.quickerlink.connection.QuickerConnectionConfig
 import app.quickerlink.connection.QuickerConnectionState
-import app.quickerlink.connection.QuickerGlobalAction
-import app.quickerlink.connection.QuickerGlobalActionCatalog
+import app.quickerlink.connection.QuickerPanelAction
+import app.quickerlink.connection.QuickerPanelActionCatalog
+import app.quickerlink.connection.QuickerPanelActionsProtocol
 import app.quickerlink.data.SavedAction
 import app.quickerlink.data.StoredConnection
 import org.junit.Assert.assertEquals
@@ -108,24 +110,45 @@ class QuickerViewModelStateTest {
     }
 
     @Test
-    fun globalActionSyncPreservesCatalogOrderAndUngroupedState() {
-        val catalog = QuickerGlobalActionCatalog(
-            groups = listOf("常用"),
-            actions = listOf(
-                QuickerGlobalAction(FIRST_ACTION_ID, "动作一", "常用", 2),
-                QuickerGlobalAction(SECOND_ACTION_ID, "动作二", null, 7),
+    fun panelActionSyncPreservesSceneAndPanelOrder() {
+        val catalog = panelCatalog(
+            globalGroups = listOf("常用"),
+            globalActions = listOf(
+                QuickerPanelAction(FIRST_ACTION_ID, "动作一", "常用", 2),
+                QuickerPanelAction(SECOND_ACTION_ID, "动作二", null, 7),
+            ),
+            commonGroups = listOf("默认"),
+            commonActions = listOf(
+                QuickerPanelAction(THIRD_ACTION_ID, "通用动作", "默认", 1),
             ),
         )
 
-        val merged = mergeGlobalActions(emptyList(), catalog)
+        val merged = mergePanelActions(emptyList(), catalog)
 
-        assertEquals(listOf(FIRST_ACTION_ID, SECOND_ACTION_ID), merged.map(SavedAction::quickerActionId))
-        assertEquals(listOf("常用", null), merged.map(SavedAction::sourceGroup))
-        assertEquals(listOf("动作一", "动作二"), merged.map(SavedAction::label))
+        assertEquals(
+            listOf(FIRST_ACTION_ID, SECOND_ACTION_ID, THIRD_ACTION_ID),
+            merged.map(SavedAction::quickerActionId),
+        )
+        assertEquals(listOf("常用", null, "默认"), merged.map(SavedAction::sourceGroup))
+        assertEquals(
+            listOf(
+                QuickerPanelActionsProtocol.GLOBAL_SCENE,
+                QuickerPanelActionsProtocol.GLOBAL_SCENE,
+                QuickerPanelActionsProtocol.COMMON_SCENE,
+            ),
+            merged.map(SavedAction::sourceScene),
+        )
     }
 
     @Test
-    fun globalActionSyncUpdatesRenamesRemovesMissingMappingsAndKeepsManualActions() {
+    fun fullPanelSyncUpdatesMappingsRemovesAllMissingSyncedItemsAndKeepsManualActions() {
+        val manual = SavedAction(
+            id = "manual",
+            label = "手工动作",
+            actionTarget = "按名称运行",
+            parameter = "手工参数",
+            confirmBeforeRun = true,
+        )
         val existing = listOf(
             SavedAction(
                 id = "synced-first",
@@ -133,33 +156,93 @@ class QuickerViewModelStateTest {
                 actionTarget = FIRST_ACTION_ID,
                 parameter = "保留参数",
                 confirmBeforeRun = true,
-                quickerActionId = FIRST_ACTION_ID,
+                quickerActionId = FIRST_ACTION_ID.uppercase(),
                 sourceGroup = "旧分组",
+                sourceScene = null,
             ),
             SavedAction(
-                id = "synced-removed",
-                label = "已删除",
+                id = "synced-removed-common",
+                label = "已删除通用",
                 actionTarget = SECOND_ACTION_ID,
                 quickerActionId = SECOND_ACTION_ID,
+                sourceScene = QuickerPanelActionsProtocol.COMMON_SCENE,
             ),
-            SavedAction(id = "manual", label = "手工动作", actionTarget = "按名称运行"),
+            SavedAction(
+                id = "synced-removed-without-scene",
+                label = "旧数据",
+                actionTarget = THIRD_ACTION_ID,
+                quickerActionId = THIRD_ACTION_ID,
+                sourceScene = null,
+            ),
+            manual,
         )
-        val catalog = QuickerGlobalActionCatalog(
-            groups = listOf("新分组"),
-            actions = listOf(QuickerGlobalAction(FIRST_ACTION_ID, "新名称", "新分组", 4)),
+        val catalog = panelCatalog(
+            globalGroups = listOf("新分组"),
+            globalActions = listOf(QuickerPanelAction(FIRST_ACTION_ID, "新名称", "新分组", 4)),
         )
 
-        val merged = mergeGlobalActions(existing, catalog)
+        val merged = mergePanelActions(existing, catalog)
 
         assertEquals(listOf("synced-first", "manual"), merged.map(SavedAction::id))
         assertEquals("新名称", merged.first().label)
         assertEquals("新分组", merged.first().sourceGroup)
         assertEquals("保留参数", merged.first().parameter)
         assertTrue(merged.first().confirmBeforeRun)
+        assertEquals(QuickerPanelActionsProtocol.GLOBAL_SCENE, merged.first().sourceScene)
+        assertEquals(manual, merged.last())
     }
 
     @Test
-    fun globalActionSyncConvertsMatchingManualGuidWithoutDuplication() {
+    fun movingActionFromGlobalToCommonPreservesLocalSettings() {
+        val existing = SavedAction(
+            id = "stable-local-id",
+            label = "旧名称",
+            actionTarget = FIRST_ACTION_ID,
+            parameter = "payload",
+            confirmBeforeRun = true,
+            quickerActionId = FIRST_ACTION_ID,
+            sourceScene = QuickerPanelActionsProtocol.GLOBAL_SCENE,
+        )
+        val catalog = panelCatalog(
+            commonGroups = listOf("默认"),
+            commonActions = listOf(QuickerPanelAction(FIRST_ACTION_ID, "通用名称", "默认", 0)),
+        )
+
+        val merged = mergePanelActions(listOf(existing), catalog)
+
+        assertEquals(1, merged.size)
+        assertEquals("stable-local-id", merged.single().id)
+        assertEquals("payload", merged.single().parameter)
+        assertTrue(merged.single().confirmBeforeRun)
+        assertEquals(QuickerPanelActionsProtocol.COMMON_SCENE, merged.single().sourceScene)
+    }
+
+    @Test
+    fun panelActionSyncDeduplicatesByUuidWithGlobalPriorityEvenWhenCatalogIsReversed() {
+        val catalog = QuickerPanelActionCatalog(
+            scenes = listOf(
+                QuickerPanelScene(
+                    scene = QuickerPanelActionsProtocol.COMMON_SCENE,
+                    groups = emptyList(),
+                    actions = listOf(QuickerPanelAction(FIRST_ACTION_ID, "通用名称", null, 0)),
+                ),
+                QuickerPanelScene(
+                    scene = QuickerPanelActionsProtocol.GLOBAL_SCENE,
+                    groups = emptyList(),
+                    actions = listOf(QuickerPanelAction(FIRST_ACTION_ID.uppercase(), "全局名称", null, 0)),
+                ),
+            ),
+        )
+
+        val merged = mergePanelActions(emptyList(), catalog)
+
+        assertEquals(1, merged.size)
+        assertEquals("全局名称", merged.single().label)
+        assertEquals(QuickerPanelActionsProtocol.GLOBAL_SCENE, merged.single().sourceScene)
+    }
+
+    @Test
+    fun panelActionSyncKeepsMatchingManualGuidAsLocalData() {
         val manualGuid = SavedAction(
             id = "manual-guid",
             label = "自定义名称",
@@ -167,23 +250,42 @@ class QuickerViewModelStateTest {
             parameter = "payload",
             confirmBeforeRun = true,
         )
-        val catalog = QuickerGlobalActionCatalog(
-            groups = emptyList(),
-            actions = listOf(QuickerGlobalAction(FIRST_ACTION_ID, "Quicker 名称", null, 0)),
+        val catalog = panelCatalog(
+            commonActions = listOf(QuickerPanelAction(FIRST_ACTION_ID, "Quicker 名称", null, 0)),
         )
 
-        val merged = mergeGlobalActions(listOf(manualGuid), catalog)
+        val merged = mergePanelActions(listOf(manualGuid), catalog)
 
-        assertEquals(1, merged.size)
-        assertEquals("manual-guid", merged.single().id)
-        assertEquals(FIRST_ACTION_ID, merged.single().quickerActionId)
-        assertEquals("Quicker 名称", merged.single().label)
-        assertEquals("payload", merged.single().parameter)
-        assertTrue(merged.single().confirmBeforeRun)
+        assertEquals(2, merged.size)
+        assertEquals("quicker:$FIRST_ACTION_ID", merged.first().id)
+        assertEquals(FIRST_ACTION_ID, merged.first().quickerActionId)
+        assertEquals(QuickerPanelActionsProtocol.COMMON_SCENE, merged.first().sourceScene)
+        assertEquals(manualGuid, merged.last())
     }
+
+    private fun panelCatalog(
+        globalGroups: List<String> = emptyList(),
+        globalActions: List<QuickerPanelAction> = emptyList(),
+        commonGroups: List<String> = emptyList(),
+        commonActions: List<QuickerPanelAction> = emptyList(),
+    ): QuickerPanelActionCatalog = QuickerPanelActionCatalog(
+        scenes = listOf(
+            QuickerPanelScene(
+                scene = QuickerPanelActionsProtocol.GLOBAL_SCENE,
+                groups = globalGroups,
+                actions = globalActions,
+            ),
+            QuickerPanelScene(
+                scene = QuickerPanelActionsProtocol.COMMON_SCENE,
+                groups = commonGroups,
+                actions = commonActions,
+            ),
+        ),
+    )
 
     private companion object {
         const val FIRST_ACTION_ID = "11111111-1111-4111-8111-111111111111"
         const val SECOND_ACTION_ID = "22222222-2222-4222-8222-222222222222"
+        const val THIRD_ACTION_ID = "33333333-3333-4333-8333-333333333333"
     }
 }
