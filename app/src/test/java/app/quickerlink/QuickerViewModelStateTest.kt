@@ -14,13 +14,11 @@ class QuickerViewModelStateTest {
     private val config = QuickerConnectionConfig(
         ipAddress = "192.168.1.56",
         port = 668,
-        secure = true,
         password = "123456",
     )
     private val storedConnection = StoredConnection(
         ipAddress = config.ipAddress,
         port = config.port,
-        secure = config.secure,
         rememberPassword = true,
         password = config.password,
         requiresPassword = true,

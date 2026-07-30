@@ -210,7 +210,6 @@ class QuickerConnectionManagerTest {
         val CONFIG = QuickerConnectionConfig(
             ipAddress = "192.168.1.56",
             port = 668,
-            secure = true,
             password = "1234",
         )
     }

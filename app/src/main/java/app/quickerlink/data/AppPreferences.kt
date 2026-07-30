@@ -44,7 +44,6 @@ class AppPreferences(context: Context) : QuickerPreferences {
         return StoredConnection(
             ipAddress = preferences.getString(KEY_IP_ADDRESS, "").orEmpty(),
             port = preferences.getInt(KEY_PORT, 668),
-            secure = preferences.getBoolean(KEY_SECURE, true),
             rememberPassword = rememberPassword,
             password = if (rememberPassword) decrypt(preferences.getString(KEY_PASSWORD, null)).orEmpty() else "",
             requiresPassword = preferences.getBoolean(KEY_REQUIRES_PASSWORD, false),
@@ -67,7 +66,7 @@ class AppPreferences(context: Context) : QuickerPreferences {
             preferences.edit().apply {
                 putString(KEY_IP_ADDRESS, connection.ipAddress)
                 putInt(KEY_PORT, connection.port)
-                putBoolean(KEY_SECURE, connection.secure)
+                remove(LEGACY_KEY_SECURE)
                 putBoolean(KEY_REMEMBER_PASSWORD, connection.rememberPassword)
                 putBoolean(KEY_REQUIRES_PASSWORD, connection.requiresPassword)
                 if (encryptedPassword != null) {
@@ -161,7 +160,7 @@ class AppPreferences(context: Context) : QuickerPreferences {
         const val PREFERENCES_NAME = "quicker_link"
         const val KEY_IP_ADDRESS = "ip_address"
         const val KEY_PORT = "port"
-        const val KEY_SECURE = "secure"
+        const val LEGACY_KEY_SECURE = "secure"
         const val KEY_REMEMBER_PASSWORD = "remember_password"
         const val KEY_REQUIRES_PASSWORD = "requires_password"
         const val KEY_PASSWORD = "password_v1"

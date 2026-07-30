@@ -29,18 +29,19 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.LinkOff
-import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Password
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.AlertDialog
@@ -93,6 +94,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.quickerlink.EventLog
 import app.quickerlink.QuickerUiState
+import app.quickerlink.QuickerDiscoveryState
 import app.quickerlink.QuickerViewModel
 import app.quickerlink.UiNotice
 import app.quickerlink.connection.QuickerConnectionState
@@ -109,6 +111,9 @@ private enum class MainDestination(val label: String, val icon: ImageVector) {
 fun QuickerApp(
     viewModel: QuickerViewModel,
     onRequestLocalNetworkPermission: () -> Unit,
+    cameraPermissionGranted: Boolean,
+    cameraPermissionPermanentlyDenied: Boolean,
+    onRequestCameraPermission: () -> Unit,
     onOpenAppSettings: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -116,6 +121,15 @@ fun QuickerApp(
     var destination by rememberSaveable { mutableStateOf(MainDestination.ACTIONS) }
     var editedAction by remember { mutableStateOf<SavedAction?>(null) }
     var showActionEditor by remember { mutableStateOf(false) }
+    var showPairingScanner by rememberSaveable { mutableStateOf(false) }
+    var pairingScannerRequested by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(cameraPermissionGranted, pairingScannerRequested) {
+        if (cameraPermissionGranted && pairingScannerRequested) {
+            pairingScannerRequested = false
+            showPairingScanner = true
+        }
+    }
 
     LaunchedEffect(viewModel) {
         viewModel.notices.collect { notice ->
@@ -184,10 +198,20 @@ fun QuickerApp(
                 contentPadding = innerPadding,
                 onIpChanged = viewModel::updateIpAddress,
                 onPortChanged = viewModel::updatePort,
-                onSecureChanged = viewModel::updateSecure,
                 onPasswordChanged = viewModel::updatePassword,
                 onRememberPasswordChanged = viewModel::updateRememberPassword,
                 onConnect = viewModel::connect,
+                onDiscover = viewModel::discoverAndConnect,
+                onScanPairingCode = {
+                    when {
+                        cameraPermissionGranted -> showPairingScanner = true
+                        cameraPermissionPermanentlyDenied -> onOpenAppSettings()
+                        else -> {
+                            pairingScannerRequested = true
+                            onRequestCameraPermission()
+                        }
+                    }
+                },
                 onDisconnect = viewModel::disconnect,
                 onRequestPermission = onRequestLocalNetworkPermission,
                 onOpenAppSettings = onOpenAppSettings,
@@ -205,6 +229,16 @@ fun QuickerApp(
                 viewModel.saveAction(action)
                 showActionEditor = false
             },
+        )
+    }
+
+    if (showPairingScanner) {
+        PairingQrScannerDialog(
+            onResult = { payload ->
+                showPairingScanner = false
+                viewModel.connectFromPairingCode(payload)
+            },
+            onDismiss = { showPairingScanner = false },
         )
     }
 }
@@ -490,10 +524,11 @@ private fun ConnectionScreen(
     contentPadding: PaddingValues,
     onIpChanged: (String) -> Unit,
     onPortChanged: (String) -> Unit,
-    onSecureChanged: (Boolean) -> Unit,
     onPasswordChanged: (String) -> Unit,
     onRememberPasswordChanged: (Boolean) -> Unit,
     onConnect: () -> Unit,
+    onDiscover: () -> Unit,
+    onScanPairingCode: () -> Unit,
     onDisconnect: () -> Unit,
     onRequestPermission: () -> Unit,
     onOpenAppSettings: () -> Unit,
@@ -503,11 +538,13 @@ private fun ConnectionScreen(
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
     var textOperation by rememberSaveable { mutableStateOf("paste") }
     var textToSend by rememberSaveable { mutableStateOf("") }
-    var showPlaintextConfirmation by rememberSaveable { mutableStateOf(false) }
+    var advancedExpanded by rememberSaveable { mutableStateOf(false) }
     val connected = state.connectionState is QuickerConnectionState.Ready
+    val discovering = state.discoveryState is QuickerDiscoveryState.Scanning
     val busy = state.connectionState is QuickerConnectionState.Connecting ||
         state.connectionState is QuickerConnectionState.Authenticating ||
-        state.connectionState is QuickerConnectionState.Reconnecting
+        state.connectionState is QuickerConnectionState.Reconnecting ||
+        discovering
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -535,59 +572,27 @@ private fun ConnectionScreen(
             item { ConnectionErrorRow(error) }
         }
 
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = state.ipAddress,
-                    onValueChange = onIpChanged,
-                    modifier = Modifier.weight(1f),
-                    label = { Text("电脑 IPv4") },
-                    placeholder = { Text("192.168.1.56") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
-                    enabled = !busy && !connected,
-                )
-                OutlinedTextField(
-                    value = state.port,
-                    onValueChange = onPortChanged,
-                    modifier = Modifier.width(104.dp),
-                    label = { Text("端口") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
-                    enabled = !busy && !connected,
-                )
-            }
-        }
-
-        item {
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                listOf(true to "WSS", false to "WS").forEachIndexed { index, (secure, label) ->
-                    SegmentedButton(
-                        selected = state.secure == secure,
-                        onClick = {
-                            if (secure) {
-                                onSecureChanged(true)
-                            } else if (state.secure) {
-                                showPlaintextConfirmation = true
-                            }
-                        },
-                        shape = SegmentedButtonDefaults.itemShape(index, 2),
-                        icon = {
-                            Icon(
-                                if (secure) Icons.Outlined.Lock else Icons.Outlined.LockOpen,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
-                        enabled = !busy && !connected,
-                        label = { Text(label) },
-                    )
+        when (val discovery = state.discoveryState) {
+            is QuickerDiscoveryState.Scanning -> item {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text("正在查找 Quicker", style = MaterialTheme.typography.bodyMedium)
+                    }
                 }
             }
-        }
 
-        if (!state.secure) {
-            item { PlaintextWarning() }
+            is QuickerDiscoveryState.Failed -> item { ConnectionErrorRow(discovery.reason) }
+            QuickerDiscoveryState.Idle -> Unit
         }
 
         item {
@@ -631,17 +636,91 @@ private fun ConnectionScreen(
                 OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Outlined.LinkOff, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text(if (busy) "取消连接" else "断开连接")
+                    Text(if (discovering) "取消查找" else if (busy) "取消连接" else "断开连接")
                 }
             } else {
-                Button(
-                    onClick = onConnect,
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = state.localNetworkPermissionGranted,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Icon(Icons.Outlined.Link, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("连接 Quicker")
+                    Button(
+                        onClick = if (state.ipAddress.isBlank()) onDiscover else onConnect,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = state.localNetworkPermissionGranted,
+                    ) {
+                        Icon(
+                            if (state.ipAddress.isBlank()) Icons.Outlined.Search else Icons.Outlined.Link,
+                            contentDescription = null,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (state.ipAddress.isBlank()) "自动查找并连接" else "连接 Quicker")
+                    }
+                    if (state.ipAddress.isNotBlank()) {
+                        OutlinedButton(
+                            onClick = onDiscover,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = state.localNetworkPermissionGranted,
+                        ) {
+                            Icon(Icons.Outlined.Search, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("查找其他电脑")
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = onScanPairingCode,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = state.localNetworkPermissionGranted,
+                    ) {
+                        Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("扫描配对码")
+                    }
+                }
+            }
+        }
+
+        item {
+            TextButton(
+                onClick = { advancedExpanded = !advancedExpanded },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !busy && !connected,
+            ) {
+                Text("高级设置", modifier = Modifier.weight(1f))
+                Icon(
+                    if (advancedExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    contentDescription = if (advancedExpanded) "收起" else "展开",
+                )
+            }
+        }
+
+        if (advancedExpanded) {
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = state.ipAddress,
+                        onValueChange = onIpChanged,
+                        modifier = Modifier.weight(1f),
+                        label = { Text("电脑 IPv4") },
+                        placeholder = { Text("192.168.1.56") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Decimal,
+                            imeAction = ImeAction.Next,
+                        ),
+                        enabled = !busy && !connected,
+                    )
+                    OutlinedTextField(
+                        value = state.port,
+                        onValueChange = onPortChanged,
+                        modifier = Modifier.width(104.dp),
+                        label = { Text("WSS 端口") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Next,
+                        ),
+                        enabled = !busy && !connected,
+                    )
                 }
             }
         }
@@ -714,27 +793,6 @@ private fun ConnectionScreen(
         }
     }
 
-    if (showPlaintextConfirmation) {
-        AlertDialog(
-            onDismissRequest = { showPlaintextConfirmation = false },
-            icon = { Icon(Icons.Outlined.WarningAmber, contentDescription = null) },
-            title = { Text("使用未加密的 WS？") },
-            text = { Text("验证码、动作名称和传输内容会以明文在局域网中传输。仅在完全信任当前网络时使用。") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showPlaintextConfirmation = false
-                        onSecureChanged(false)
-                    },
-                ) {
-                    Text("仍然使用 WS")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showPlaintextConfirmation = false }) { Text("保持 WSS") }
-            },
-        )
-    }
 }
 
 @Composable
@@ -781,28 +839,6 @@ private fun ConnectionErrorRow(message: String) {
             Icon(Icons.Outlined.ErrorOutline, contentDescription = null)
             Spacer(Modifier.width(10.dp))
             Text(message, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        }
-    }
-}
-
-@Composable
-private fun PlaintextWarning() {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.errorContainer,
-        contentColor = MaterialTheme.colorScheme.onErrorContainer,
-        shape = RoundedCornerShape(8.dp),
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
-            Icon(Icons.Outlined.WarningAmber, contentDescription = null)
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text("当前连接未加密", fontWeight = FontWeight.SemiBold)
-                Text("WS 会以明文传输验证码和操作内容。", style = MaterialTheme.typography.bodySmall)
-            }
         }
     }
 }

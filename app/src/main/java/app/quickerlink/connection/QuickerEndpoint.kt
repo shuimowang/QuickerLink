@@ -7,7 +7,6 @@ import java.net.UnknownHostException
 data class QuickerConnectionConfig(
     val ipAddress: String,
     val port: Int,
-    val secure: Boolean,
     val password: String,
 )
 
@@ -16,13 +15,10 @@ object QuickerEndpoint {
 
     fun url(config: QuickerConnectionConfig): String {
         val normalizedIp = normalizeIpv4(config.ipAddress)
+        require(isPrivateIpv4(normalizedIp)) { "请输入电脑的局域网 IPv4 地址" }
         require(config.port in 1..65535) { "端口必须在 1 到 65535 之间" }
 
-        return if (config.secure) {
-            "wss://${normalizedIp.replace('.', '-')}$QUICKER_LAN_SUFFIX:${config.port}/ws"
-        } else {
-            "ws://$normalizedIp:${config.port}/ws"
-        }
+        return "wss://${normalizedIp.replace('.', '-')}$QUICKER_LAN_SUFFIX:${config.port}/ws"
     }
 
     fun normalizeIpv4(value: String): String {
@@ -38,6 +34,14 @@ object QuickerEndpoint {
 
         require(octets.any { it != 0 }) { "请输入电脑的局域网 IPv4 地址" }
         return octets.joinToString(".")
+    }
+
+    fun isPrivateIpv4(value: String): Boolean {
+        val normalized = runCatching { normalizeIpv4(value) }.getOrNull() ?: return false
+        val octets = normalized.split('.').map(String::toInt)
+        return octets[0] == 10 ||
+            (octets[0] == 172 && octets[1] in 16..31) ||
+            (octets[0] == 192 && octets[1] == 168)
     }
 }
 

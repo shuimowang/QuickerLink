@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Quicker Link 配对码</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+      color: #17211c;
+      background: #f4f6f5;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    [hidden] { display: none !important; }
+    header { border-bottom: 1px solid #d9dfdc; background: #ffffff; }
+    header div, main { width: min(920px, calc(100% - 32px)); margin: 0 auto; }
+    header div { padding: 22px 0 18px; }
+    h1 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: 0; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 48px; padding: 40px 0; }
+    main.single-column { grid-template-columns: minmax(0, 560px); justify-content: center; }
+    form { display: grid; gap: 18px; align-content: start; }
+    .row { display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 12px; }
+    label { display: grid; gap: 7px; font-size: 14px; font-weight: 600; }
+    input {
+      width: 100%; min-height: 44px; padding: 10px 12px;
+      border: 1px solid #aeb9b3; border-radius: 6px;
+      background: #ffffff; color: #17211c; font: inherit; letter-spacing: 0;
+    }
+    input:focus { outline: 3px solid #bfe6d2; border-color: #16784c; }
+    button, .download {
+      min-height: 44px; border: 0; border-radius: 6px; padding: 10px 16px;
+      font: inherit; font-weight: 650; letter-spacing: 0; cursor: pointer;
+    }
+    button { color: #ffffff; background: #146c43; }
+    button:hover { background: #0f5736; }
+    .download { display: none; text-align: center; text-decoration: none; color: #17211c; background: #e3e8e5; }
+    .download:hover { background: #d4dbd7; }
+    .output { display: grid; gap: 14px; align-content: start; justify-items: center; }
+    .qr {
+      width: min(100%, 340px); aspect-ratio: 1; display: grid; place-items: center;
+      border: 1px solid #d9dfdc; border-radius: 6px; background: #ffffff; padding: 16px;
+    }
+    .qr img { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+    .status { min-height: 22px; margin: 0; color: #b42318; font-size: 14px; text-align: center; }
+    .warning { margin: 0; color: #7a3e00; font-size: 13px; text-align: center; }
+    @media (max-width: 720px) {
+      main { grid-template-columns: 1fr; gap: 32px; padding: 28px 0; }
+    }
+    @media (max-width: 420px) {
+      .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header><div><h1>Quicker Link 配对码</h1></div></header>
+  <main id="main" class="single-column">
+    <form id="pairing-form" novalidate>
+      <div class="row">
+        <label>电脑 IPv4
+          <input id="ip" inputmode="decimal" placeholder="192.168.1.56" autocomplete="off" maxlength="15" required>
+        </label>
+        <label>WSS 端口
+          <input id="port" inputmode="numeric" value="668" autocomplete="off" maxlength="5" required>
+        </label>
+      </div>
+      <label>连接验证码
+        <input id="code" type="password" autocomplete="off" maxlength="256">
+      </label>
+      <button type="submit">生成配对码</button>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </form>
+    <section id="output" class="output" hidden>
+      <div id="qr" class="qr"></div>
+      <p class="warning">二维码包含连接验证码，请勿分享。</p>
+      <a id="download" class="download" download="quicker-link-pairing.png">下载 PNG</a>
+    </section>
+  </main>
+  <script src="vendor/qrcode-generator-1.4.4.js"></script>
+  <script>
+    const form = document.getElementById('pairing-form');
+    const main = document.getElementById('main');
+    const output = document.getElementById('output');
+    const qrContainer = document.getElementById('qr');
+    const status = document.getElementById('status');
+    const download = document.getElementById('download');
+
+    function normalizePrivateIpv4(value) {
+      const parts = value.trim().split('.');
+      if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part))) return null;
+      const octets = parts.map(Number);
+      if (octets.some(octet => octet < 0 || octet > 255)) return null;
+      const isPrivate = octets[0] === 10 ||
+        (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+        (octets[0] === 192 && octets[1] === 168);
+      return isPrivate ? octets.join('.') : null;
+    }
+
+    function createPngDataUrl(qr, scale = 7) {
+      const moduleCount = qr.getModuleCount();
+      const margin = scale * 4;
+      const size = moduleCount * scale + margin * 2;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const context = canvas.getContext('2d');
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, size, size);
+      context.fillStyle = '#000000';
+      for (let row = 0; row < moduleCount; row += 1) {
+        for (let column = 0; column < moduleCount; column += 1) {
+          if (qr.isDark(row, column)) {
+            context.fillRect(margin + column * scale, margin + row * scale, scale, scale);
+          }
+        }
+      }
+      return canvas.toDataURL('image/png');
+    }
+
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      status.textContent = '';
+      output.hidden = true;
+      main.classList.add('single-column');
+      qrContainer.replaceChildren();
+      download.style.display = 'none';
+      const ip = normalizePrivateIpv4(document.getElementById('ip').value);
+      const portText = document.getElementById('port').value.trim();
+      const code = document.getElementById('code').value;
+      if (!ip) {
+        status.textContent = '请输入局域网 IPv4 地址。';
+        return;
+      }
+      if (!/^[0-9]{1,5}$/.test(portText)) {
+        status.textContent = '请输入有效的 WSS 端口。';
+        return;
+      }
+      const port = Number(portText);
+      if (port < 1 || port > 65535) {
+        status.textContent = '请输入有效的 WSS 端口。';
+        return;
+      }
+      if (code.length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(code)) {
+        status.textContent = '连接验证码无效。';
+        return;
+      }
+      const payload = `quickerlink://pair?v=1&ip=${encodeURIComponent(ip)}&port=${port}&code=${encodeURIComponent(code)}`;
+      if (typeof qrcode !== 'function') {
+        status.textContent = '二维码组件未加载，请保留 vendor 目录后重新打开。';
+        return;
+      }
+      try {
+        const qr = qrcode(0, 'M');
+        qr.addData(payload);
+        qr.make();
+        const image = new Image();
+        image.alt = 'Quicker Link 配对二维码';
+        image.src = createPngDataUrl(qr);
+        qrContainer.replaceChildren(image);
+        download.href = image.src;
+        download.style.display = 'block';
+        output.hidden = false;
+        main.classList.remove('single-column');
+        if (window.matchMedia('(max-width: 720px)').matches) {
+          requestAnimationFrame(() => output.scrollIntoView({ block: 'start' }));
+        }
+      } catch {
+        status.textContent = '二维码内容过长，请缩短连接验证码后重试。';
+      }
+    });
+  </script>
+</body>
+</html>

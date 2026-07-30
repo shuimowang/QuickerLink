@@ -10,7 +10,9 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 Web
 
 ## 功能
 
-- 通过 `WSS` 或 `WS` 直连局域网中的 Quicker
+- 通过 `WSS` 加密直连局域网中的 Quicker
+- 自动发现同一局域网中的 Quicker，保留手动地址作为高级选项
+- 扫描 Quicker Link 专用配对二维码
 - 连接验证码认证，异常断线自动重连
 - 保存、编辑、删除动作快捷项
 - 通过动作名称或 ID 执行动作，并传入文本参数
@@ -29,18 +31,13 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 Web
 设置 -> 手机 APP / WebSocket 设置
 ```
 
-开启 WebSocket 服务，记录电脑的局域网 IPv4、端口和连接验证码。建议同时开启安全连接 `WSS`，并确认 Windows 防火墙允许 Quicker 使用该端口。
+开启 WebSocket 服务和安全连接 `WSS`，记录端口与连接验证码，并确认 Windows 防火墙允许 Quicker 使用该端口。
 
 ### 2. 连接手机
 
-手机与电脑连接到同一个可互访的局域网。在 Quicker Link 的“连接”页面填写：
+手机与电脑连接到同一个可互访的局域网。在“连接”页面填写连接验证码，点击“自动查找并连接”。连接成功后，顶部状态图标会变为绿色。
 
-- 电脑 IPv4，例如 `192.168.1.56`
-- Quicker WebSocket 端口，默认常见值为 `668`，以实际设置为准
-- 与 Quicker 设置一致的 `WSS/WS` 模式
-- 连接验证码
-
-连接成功后，顶部状态图标会变为绿色。
+自定义端口或无法发现时，可以展开“高级设置”手动填写 IPv4，或打开[配对码生成器](https://shuimowang.github.io/QuickerLink/pairing.html)生成 Quicker Link 专用二维码后扫描。生成器只在浏览器本地处理输入且禁止外联；离线使用时请下载完整的 [`tools`](tools) 目录，并打开其中的 `pairing.html`。Quicker 会员中心“推送到电脑”页面的二维码属于云推送服务，不包含局域网 WSS 配置，不能用于本项目配对。
 
 ### 3. 添加动作
 
@@ -52,18 +49,18 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 Web
 
 ## 安装预览版
 
-`v0.1.0-alpha.1` 是使用项目专用 Release 密钥签名的早期 prerelease APK，用于测试，不代表已达到稳定生产版质量。GitHub Release 不会发布调试签名或未签名 APK。
+`v0.2.0-alpha.1` 是使用项目专用 Release 密钥签名的早期 prerelease APK，用于测试，不代表已达到稳定生产版质量。GitHub Release 不会发布调试签名或未签名 APK。
 
-如需试用，请从 [Releases](https://github.com/shuimowang/QuickerLink/releases) 同时下载 `quicker-link-v0.1.0-alpha.1-release.apk` 和同名 `.sha256` 文件。首次安装时，Android 可能要求允许安装来自浏览器或文件管理器的应用。
+如需试用，请从 [Releases](https://github.com/shuimowang/QuickerLink/releases) 同时下载 `quicker-link-v0.2.0-alpha.1-release.apk` 和同名 `.sha256` 文件。首次安装时，Android 可能要求允许安装来自浏览器或文件管理器的应用。
 
 安装前计算下载文件的 SHA-256，并与 `.sha256` 文件中的 64 位十六进制值逐字符比较：
 
 ```powershell
-(Get-FileHash -Algorithm SHA256 -LiteralPath ".\quicker-link-v0.1.0-alpha.1-release.apk").Hash.ToLowerInvariant()
+(Get-FileHash -Algorithm SHA256 -LiteralPath ".\quicker-link-v0.2.0-alpha.1-release.apk").Hash.ToLowerInvariant()
 ```
 
 ```bash
-sha256sum --check quicker-link-v0.1.0-alpha.1-release.apk.sha256
+sha256sum --check quicker-link-v0.2.0-alpha.1-release.apk.sha256
 ```
 
 校验和只能确认下载内容与发布的字节一致；请仍然仅从项目的 GitHub Release 页获取首个可信版本。
@@ -72,9 +69,11 @@ sha256sum --check quicker-link-v0.1.0-alpha.1-release.apk.sha256
 
 ## 网络与安全
 
-- 默认使用 `WSS`。连接地址形如 `wss://192-168-1-56.lan.quicker.cc:668/ws`。
+- 仅支持 `WSS`。连接地址形如 `wss://192-168-1-56.lan.quicker.cc:668/ws`。
 - App 在本地将上述主机名解析回用户填写的 IPv4，同时保留主机名完成 TLS 证书校验。
-- `WS` 会明文传输验证码和命令，仅应在可信局域网中作为兼容模式使用。
+- App 不提供明文 `WS` 降级选项。
+- 自动发现只扫描当前 Wi-Fi 或以太网的私有 IPv4 网段，候选数和并发数均有硬上限；探测阶段不发送验证码，只有唯一 WSS 候选才进入正常认证。
+- 配对二维码仅接受 `quickerlink://pair` 版本化格式和私有 IPv4；二维码包含验证码，应按凭据保护。
 - 本项目不会禁用 TLS 证书或主机名校验。
 - 请勿将 Quicker WebSocket 端口直接暴露到公网。
 
@@ -102,7 +101,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## 项目状态
 
-当前为专用 Release 密钥签名的早期 prerelease，聚焦局域网内稳定触发动作。暂不支持公网中转、后台常驻、文件传输、图片粘贴或自动发现电脑。
+当前为专用 Release 密钥签名的早期 prerelease，聚焦局域网内稳定触发动作。暂不支持公网中转、后台常驻、文件传输、图片粘贴或自动同步动作目录。
 
 欢迎阅读 [贡献指南](CONTRIBUTING.md) 并提交 Issue 或 Pull Request。
 

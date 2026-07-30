@@ -13,7 +13,6 @@ data class SavedAction(
 data class StoredConnection(
     val ipAddress: String = "",
     val port: Int = 668,
-    val secure: Boolean = true,
     val rememberPassword: Boolean = false,
     val password: String = "",
     val requiresPassword: Boolean = false,

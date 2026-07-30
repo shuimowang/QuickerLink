@@ -9,16 +9,24 @@ import androidx.lifecycle.viewModelScope
 import app.quickerlink.connection.QuickerConnectionConfig
 import app.quickerlink.connection.QuickerConnectionManager
 import app.quickerlink.connection.QuickerConnectionState
+import app.quickerlink.connection.AndroidIpv4SubnetProvider
 import app.quickerlink.connection.QuickerEndpoint
 import app.quickerlink.connection.QuickerEventDirection
 import app.quickerlink.connection.QuickerIncomingCommand
+import app.quickerlink.connection.QuickerDiscoveryRequest
+import app.quickerlink.connection.QuickerLanDiscovery
+import app.quickerlink.connection.QuickerPairingCode
 import app.quickerlink.connection.QuickerProtocol
+import app.quickerlink.connection.QuickerWebSocketEndpointProbe
 import app.quickerlink.data.AppPreferences
 import app.quickerlink.data.PreferenceWriteResult
 import app.quickerlink.data.QuickerPreferences
 import app.quickerlink.data.SavedAction
 import app.quickerlink.data.StoredConnection
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -37,13 +45,19 @@ data class EventLog(
     val text: String,
 )
 
+sealed interface QuickerDiscoveryState {
+    data object Idle : QuickerDiscoveryState
+    data class Scanning(val subnet: String) : QuickerDiscoveryState
+    data class Failed(val reason: String) : QuickerDiscoveryState
+}
+
 data class QuickerUiState(
     val ipAddress: String = "",
     val port: String = "668",
-    val secure: Boolean = true,
     val password: String = "",
     val rememberPassword: Boolean = false,
     val connectionState: QuickerConnectionState = QuickerConnectionState.Disconnected,
+    val discoveryState: QuickerDiscoveryState = QuickerDiscoveryState.Idle,
     val connectionError: String? = null,
     val localNetworkPermissionGranted: Boolean = true,
     val localNetworkPermissionPermanentlyDenied: Boolean = false,
@@ -121,23 +135,25 @@ internal fun QuickerUiState.finishRunningAction(actionId: String): QuickerUiStat
 
 private fun StoredConnection.toReconnectConfigOrNull(): QuickerConnectionConfig? {
     if (ipAddress.isBlank() || (requiresPassword && password.isEmpty())) return null
-    return QuickerConnectionConfig(ipAddress, port, secure, password)
+    return QuickerConnectionConfig(ipAddress, port, password)
 }
 
 class QuickerViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences: QuickerPreferences = AppPreferences(application)
     private val connectionManager = QuickerConnectionManager()
+    private val subnetProvider = AndroidIpv4SubnetProvider(application)
+    private val lanDiscovery = QuickerLanDiscovery(QuickerWebSocketEndpointProbe())
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
     private val runningActionsLock = Any()
 
     private var knownGoodConnection = preferences.loadConnection()
     private val connectionSession = ConnectionSession(knownGoodConnection.toReconnectConfigOrNull())
     private var appInForeground = false
+    private var discoveryJob: Job? = null
     private val mutableUiState = MutableStateFlow(
         QuickerUiState(
             ipAddress = knownGoodConnection.ipAddress,
             port = knownGoodConnection.port.toString(),
-            secure = knownGoodConnection.secure,
             password = knownGoodConnection.password,
             rememberPassword = knownGoodConnection.rememberPassword,
             savedActions = preferences.loadActions(),
@@ -162,13 +178,17 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun updateIpAddress(value: String) = updateConnectionFields { copy(ipAddress = value, connectionError = null) }
+    fun updateIpAddress(value: String) = updateConnectionFields {
+        copy(
+            ipAddress = value,
+            connectionError = null,
+            discoveryState = QuickerDiscoveryState.Idle,
+        )
+    }
 
     fun updatePort(value: String) = updateConnectionFields {
         copy(port = value.filter(Char::isDigit).take(5), connectionError = null)
     }
-
-    fun updateSecure(value: Boolean) = updateConnectionFields { copy(secure = value, connectionError = null) }
 
     fun updatePassword(value: String) = updateConnectionFields { copy(password = value, connectionError = null) }
 
@@ -221,6 +241,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
     fun onAppBackgrounded() {
         appInForeground = false
+        cancelDiscovery()
         if (connectionSession.onBackground(connectionManager.state.value)) {
             connectionManager.disconnect()
         }
@@ -243,29 +264,124 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         val config = QuickerConnectionConfig(
             ipAddress = state.ipAddress.trim(),
             port = port,
-            secure = state.secure,
             password = state.password,
         )
-        val connectionToPersist = StoredConnection(
-            ipAddress = config.ipAddress,
-            port = port,
-            secure = state.secure,
-            rememberPassword = state.rememberPassword,
-            password = state.password,
-            requiresPassword = state.password.isNotEmpty(),
-        )
+        startConnection(config, state.rememberPassword)
+    }
 
-        runCatching {
-            QuickerEndpoint.url(config)
-            connectionSession.beginUserConnection(config, connectionToPersist)
-            connectionManager.connect(config)
-        }.onFailure { error ->
-            connectionSession.connectionStartRejected()
-            mutableUiState.update { it.copy(connectionError = error.message ?: "连接设置不正确") }
+    fun discoverAndConnect() {
+        if (!appInForeground) return
+        val state = mutableUiState.value
+        if (!state.localNetworkPermissionGranted) {
+            mutableNotices.tryEmit(UiNotice.Error("需要局域网访问权限"))
+            return
+        }
+
+        val port = state.port.toIntOrNull()
+        if (port == null || port !in 1..65535) {
+            mutableUiState.update { it.copy(connectionError = "请输入有效端口") }
+            return
+        }
+        val subnet = runCatching { subnetProvider.currentSubnet() }.getOrNull()
+        if (subnet == null) {
+            val message = "未找到可用的局域网，请连接 Wi-Fi 后重试"
+            mutableUiState.update { it.copy(discoveryState = QuickerDiscoveryState.Failed(message)) }
+            return
+        }
+
+        discoveryJob?.cancel()
+        mutableUiState.update {
+            it.copy(
+                discoveryState = QuickerDiscoveryState.Scanning(subnet.toString()),
+                connectionError = null,
+            )
+        }
+        discoveryJob = viewModelScope.launch {
+            val result = try {
+                withContext(Dispatchers.IO) {
+                    lanDiscovery.discover(
+                        QuickerDiscoveryRequest(
+                            subnet = subnet,
+                            port = port,
+                        ),
+                    )
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                val message = "查找失败，请扫描配对码或检查高级设置"
+                mutableUiState.update { it.copy(discoveryState = QuickerDiscoveryState.Failed(message)) }
+                appendLog(QuickerEventDirection.SYSTEM, message)
+                return@launch
+            }
+            if (!isActive) return@launch
+
+            if (result.timedOut) {
+                val message = "查找超时，请扫描配对码或检查 WSS 端口"
+                mutableUiState.update { it.copy(discoveryState = QuickerDiscoveryState.Failed(message)) }
+                appendLog(QuickerEventDirection.SYSTEM, message)
+                return@launch
+            }
+            if (result.endpoints.isEmpty()) {
+                val message = "未找到 Quicker，请扫描配对码或检查 WSS 端口"
+                mutableUiState.update { it.copy(discoveryState = QuickerDiscoveryState.Failed(message)) }
+                appendLog(QuickerEventDirection.SYSTEM, message)
+                return@launch
+            }
+            if (result.endpoints.size > 1) {
+                val message = "发现多台候选电脑，请扫描配对码或在高级设置中填写 IPv4"
+                mutableUiState.update { it.copy(discoveryState = QuickerDiscoveryState.Failed(message)) }
+                appendLog(QuickerEventDirection.SYSTEM, message)
+                return@launch
+            }
+
+            val endpoint = result.endpoints.single()
+            mutableUiState.update {
+                it.copy(
+                    ipAddress = endpoint.ipAddress,
+                    discoveryState = QuickerDiscoveryState.Idle,
+                )
+            }
+            appendLog(QuickerEventDirection.SYSTEM, "已发现 Quicker WSS：${endpoint.ipAddress}")
+            startConnection(
+                config = QuickerConnectionConfig(endpoint.ipAddress, endpoint.port, state.password),
+                rememberPassword = state.rememberPassword,
+            )
         }
     }
 
+    fun connectFromPairingCode(payload: String) {
+        if (!appInForeground) return
+        if (!mutableUiState.value.localNetworkPermissionGranted) {
+            mutableNotices.tryEmit(UiNotice.Error("需要局域网访问权限"))
+            return
+        }
+        val pairing = runCatching { QuickerPairingCode.parse(payload) }
+            .getOrElse { error ->
+                mutableNotices.tryEmit(UiNotice.Error(error.message ?: "无法识别配对码"))
+                return
+            }
+        val state = mutableUiState.value
+        mutableUiState.update {
+            it.copy(
+                ipAddress = pairing.ipAddress,
+                port = pairing.port.toString(),
+                password = pairing.password,
+                discoveryState = QuickerDiscoveryState.Idle,
+                connectionError = null,
+            )
+        }
+        startConnection(
+            config = QuickerConnectionConfig(pairing.ipAddress, pairing.port, pairing.password),
+            rememberPassword = state.rememberPassword,
+        )
+    }
+
     fun disconnect() {
+        if (discoveryJob?.isActive == true) {
+            cancelDiscovery()
+            return
+        }
         connectionSession.onUserDisconnect()
         mutableUiState.update { it.copy(connectionError = null) }
         connectionManager.disconnect()
@@ -403,6 +519,36 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun startConnection(config: QuickerConnectionConfig, rememberPassword: Boolean) {
+        val connectionToPersist = StoredConnection(
+            ipAddress = config.ipAddress,
+            port = config.port,
+            rememberPassword = rememberPassword,
+            password = config.password,
+            requiresPassword = config.password.isNotEmpty(),
+        )
+        runCatching {
+            QuickerEndpoint.url(config)
+            connectionSession.beginUserConnection(config, connectionToPersist)
+            connectionManager.connect(config)
+        }.onFailure { error ->
+            connectionSession.connectionStartRejected()
+            mutableUiState.update { it.copy(connectionError = error.message ?: "连接设置不正确") }
+        }
+    }
+
+    private fun cancelDiscovery() {
+        discoveryJob?.cancel()
+        discoveryJob = null
+        mutableUiState.update { state ->
+            if (state.discoveryState is QuickerDiscoveryState.Scanning) {
+                state.copy(discoveryState = QuickerDiscoveryState.Idle)
+            } else {
+                state
+            }
+        }
+    }
+
     private fun handleIncomingCommand(incomingCommand: QuickerIncomingCommand) {
         if (!appInForeground || !connectionManager.isCommandCurrent(incomingCommand)) return
         val command = incomingCommand.message
@@ -457,6 +603,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
+        discoveryJob?.cancel()
         connectionManager.close()
     }
 

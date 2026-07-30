@@ -7,7 +7,6 @@ Quicker's documentation warns that it can lag behind current software. Items bel
 ## Endpoint
 
 ```text
-ws://<computer-ip>:<port>/ws
 wss://<dashed-computer-ip>.lan.quicker.cc:<port>/ws
 ```
 
@@ -18,6 +17,24 @@ wss://192-168-1-56.lan.quicker.cc:668/ws
 ```
 
 The WSS hostname is retained for TLS SNI and hostname validation. Quicker Link's custom DNS implementation maps only valid `<IPv4>.lan.quicker.cc` names back to the encoded IPv4 and delegates all other lookups to the system resolver.
+
+Although Quicker also documents cleartext `ws://` endpoints, Quicker Link intentionally supports only WSS and never downgrades automatically.
+
+## LAN discovery
+
+Quicker does not document a LAN discovery broadcast or mDNS service. Quicker Link therefore derives bounded candidates from an available Wi-Fi or Ethernet private IPv4 subnet and probes only the configured WSS port. Discovery performs certificate and hostname validated WebSocket handshakes without sending the verification code. After a complete scan, exactly one candidate may proceed to the normal type `5`/`6` authentication flow; zero or multiple candidates require QR pairing or a manual private IPv4 address.
+
+The WSS handshake is not treated as a durable device identity. Users on an untrusted network should use a locally generated pairing QR code or verify the computer address manually.
+
+## Pairing QR code
+
+Quicker Link's pairing format is independent from Quicker's cloud push QR code:
+
+```text
+quickerlink://pair?v=1&ip=192.168.1.56&port=668&code=<percent-encoded-verification-code>
+```
+
+The parser requires schema version `1`, a private IPv4 address, a valid port, bounded control-character-free credentials, unique known fields, and implicit WSS transport. HTTP(S), cloud push, public-IP, cleartext-WS, and unknown-version payloads are rejected.
 
 The configured port is required. One official WSS example omits it, but the explanatory text and official sample client both include it. Quicker's example client commonly defaults to `668`; the actual WebSocket port configured on the computer remains authoritative.
 

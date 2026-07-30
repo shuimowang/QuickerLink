@@ -9,28 +9,33 @@ class QuickerEndpointTest {
     @Test
     fun `builds secure Quicker LAN url`() {
         val url = QuickerEndpoint.url(
-            QuickerConnectionConfig("192.168.1.56", 668, secure = true, password = "1234"),
+            QuickerConnectionConfig("192.168.1.56", 668, password = "1234"),
         )
 
         assertEquals("wss://192-168-1-56.lan.quicker.cc:668/ws", url)
     }
 
     @Test
-    fun `builds cleartext url and normalizes octets`() {
+    fun `normalizes address octets`() {
         val url = QuickerEndpoint.url(
-            QuickerConnectionConfig(" 192.168.001.056 ", 668, secure = false, password = ""),
+            QuickerConnectionConfig(" 192.168.001.056 ", 668, password = ""),
         )
 
-        assertEquals("ws://192.168.1.56:668/ws", url)
+        assertEquals("wss://192-168-1-56.lan.quicker.cc:668/ws", url)
     }
 
     @Test
-    fun `rejects invalid address and port`() {
+    fun `rejects invalid non private address and port`() {
         assertThrows(IllegalArgumentException::class.java) {
-            QuickerEndpoint.url(QuickerConnectionConfig("192.168.1.999", 668, true, ""))
+            QuickerEndpoint.url(QuickerConnectionConfig("192.168.1.999", 668, ""))
+        }
+        listOf("8.8.8.8", "127.0.0.1", "169.254.1.2", "224.0.0.1").forEach { address ->
+            assertThrows(IllegalArgumentException::class.java) {
+                QuickerEndpoint.url(QuickerConnectionConfig(address, 668, ""))
+            }
         }
         assertThrows(IllegalArgumentException::class.java) {
-            QuickerEndpoint.url(QuickerConnectionConfig("192.168.1.2", 0, true, ""))
+            QuickerEndpoint.url(QuickerConnectionConfig("192.168.1.2", 0, ""))
         }
     }
 
