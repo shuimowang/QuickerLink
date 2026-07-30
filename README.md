@@ -35,11 +35,11 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 Web
 
 开启 WebSocket 服务和安全连接 `WSS`，记录端口与连接验证码，并确认 Windows 防火墙允许 Quicker 使用该端口。
 
-先在 Quicker 中导入 [`QuickerLinkPairing.action2.json`](quicker/QuickerLinkPairing.action2.json)。配套的 `Quicker Link 配对` 动作只读取这些设置，不会替你修改端口或重新生成验证码；可审计源码位于 [`quicker`](quicker) 目录。
+先在 Quicker 中导入 [`QuickerLinkPairing.action2.json`](quicker/QuickerLinkPairing.action2.json)。配套的 `Quicker Link` 动作只读取这些设置，不会替你修改端口或重新生成验证码；可审计源码位于 [`quicker`](quicker) 目录。
 
 ### 2. 连接手机
 
-手机与电脑连接到同一个可互访的局域网。首选方式是在电脑上运行 `Quicker Link 配对` 动作，然后在 App 的连接页面点击“扫描配对码”。如果电脑有多个局域网地址，先在二维码窗口中选择与手机同网段的地址。二维码在本机内存中生成，不会上传，但其中包含连接验证码，请勿截图或分享。
+手机与电脑连接到同一个可互访的局域网。首选方式是在电脑上运行 `Quicker Link` 动作，然后在 App 的连接页面点击“扫描配对码”。如果电脑有多个局域网地址，先在二维码窗口中选择与手机同网段的地址。二维码在本机内存中生成，不会上传，但其中包含连接验证码，请勿截图或分享。
 
 也可以在“连接”页面填写连接验证码后点击“自动查找并连接”。自定义端口或无法发现时，可以展开“高级设置”手动填写 IPv4，或打开[网页版配对码生成器](https://shuimowang.github.io/QuickerLink/pairing.html)生成专用二维码。网页版只在浏览器本地处理输入且禁止外联；离线使用时请下载完整的 [`tools`](tools) 目录，并打开其中的 `pairing.html`。Quicker 会员中心“推送到电脑”页面的二维码属于云推送服务，不包含局域网 WSS 配置，不能用于本项目配对。
 

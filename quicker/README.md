@@ -1,6 +1,6 @@
-# Quicker Link 配对动作
+# Quicker Link 动作
 
-`Quicker Link 配对` 是 Android 客户端的电脑端配对与全局动作目录助手。它不是 WebSocket 代理；手机扫码后仍然直接通过局域网 WSS 连接 Quicker。
+`Quicker Link` 是 Android 客户端的电脑端配对与全局动作目录助手。它不是 WebSocket 代理；手机扫码后仍然直接通过局域网 WSS 连接 Quicker。
 
 ## 行为
 
@@ -17,13 +17,14 @@
 
 - [`QuickerLinkPairing.cs`](QuickerLinkPairing.cs)：可审计的 C# 源码
 - [`QuickerLinkPairing.action2.json`](QuickerLinkPairing.action2.json)：完整 ActionItem2 导出
+- [`QuickerLinkIcon.png`](QuickerLinkIcon.png)：透明背景的动作图标源文件
 
 动作 ID 为 `7db7596b-3b46-4afc-ab07-c96309d30aa8`，已在 Quicker `2.1.4.0`、运行时 `10.0.9` 上验证。首次公开到 Quicker 动作库前，仓库不会假装提供一个尚不存在的分享链接。
 
 ## 使用
 
 1. 在 Quicker 的“手机 APP / WebSocket 设置”中启用 WebSocket 和安全连接 WSS。
-2. 运行 `Quicker Link 配对`。
+2. 运行 `Quicker Link`。
 3. 如果出现多个地址，选择与手机同一局域网的地址。
 4. 在 Android App 的连接页面点击“扫描配对码”。
 5. 连接成功后，在“动作”页面点击“同步全局动作”。
