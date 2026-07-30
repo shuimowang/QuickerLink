@@ -185,6 +185,7 @@ fun QuickerApp(
                 state = state,
                 contentPadding = innerPadding,
                 onOpenConnection = { destination = MainDestination.CONNECTION },
+                onSyncGlobalActions = viewModel::syncGlobalActions,
                 onRun = viewModel::runAction,
                 onEdit = { action ->
                     editedAction = action
@@ -275,6 +276,7 @@ private fun ActionsScreen(
     state: QuickerUiState,
     contentPadding: PaddingValues,
     onOpenConnection: () -> Unit,
+    onSyncGlobalActions: () -> Unit,
     onRun: (SavedAction) -> Unit,
     onEdit: (SavedAction) -> Unit,
     onDelete: (SavedAction) -> Unit,
@@ -295,7 +297,9 @@ private fun ActionsScreen(
         item {
             ConnectionSummary(
                 state = state.connectionState,
+                syncingGlobalActions = state.syncingGlobalActions,
                 onOpenConnection = onOpenConnection,
+                onSyncGlobalActions = onSyncGlobalActions,
             )
         }
 
@@ -370,7 +374,9 @@ private fun ActionsScreen(
 @Composable
 private fun ConnectionSummary(
     state: QuickerConnectionState,
+    syncingGlobalActions: Boolean,
     onOpenConnection: () -> Unit,
+    onSyncGlobalActions: () -> Unit,
 ) {
     val (title, detail, color) = when (state) {
         is QuickerConnectionState.Ready -> Triple("已连接", state.endpoint, MaterialTheme.colorScheme.primary)
@@ -387,34 +393,52 @@ private fun ConnectionSummary(
         QuickerConnectionState.Disconnected -> Triple("未连接", "", MaterialTheme.colorScheme.onSurfaceVariant)
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Icon(
-            if (state is QuickerConnectionState.Ready) Icons.Outlined.CheckCircle else Icons.Outlined.LinkOff,
-            contentDescription = null,
-            tint = color,
-        )
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, color = color)
-            if (detail.isNotBlank()) {
-                Text(
-                    detail,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                if (state is QuickerConnectionState.Ready) Icons.Outlined.CheckCircle else Icons.Outlined.LinkOff,
+                contentDescription = null,
+                tint = color,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, color = color)
+                if (detail.isNotBlank()) {
+                    Text(
+                        detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            TextButton(onClick = onOpenConnection) {
+                Icon(Icons.Outlined.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("设置")
             }
         }
-        TextButton(onClick = onOpenConnection) {
-            Icon(Icons.Outlined.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(6.dp))
-            Text("设置")
+        TextButton(
+            onClick = onSyncGlobalActions,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = state is QuickerConnectionState.Ready && !syncingGlobalActions,
+        ) {
+            if (syncingGlobalActions) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(Icons.Outlined.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("同步全局动作")
         }
     }
     HorizontalDivider()
@@ -484,7 +508,11 @@ private fun SavedActionItem(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    action.actionTarget,
+                    if (action.quickerActionId != null) {
+                        "全局 · ${action.sourceGroup?.takeIf(String::isNotBlank) ?: "未分组"}"
+                    } else {
+                        action.actionTarget
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -882,6 +910,7 @@ private fun ActionEditorDialog(
     var parameter by rememberSaveable(action?.id) { mutableStateOf(action?.parameter.orEmpty()) }
     var confirm by rememberSaveable(action?.id) { mutableStateOf(action?.confirmBeforeRun ?: false) }
     val valid = label.isNotBlank() && target.isNotBlank()
+    val synced = action?.quickerActionId != null
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -901,6 +930,7 @@ private fun ActionEditorDialog(
                     label = { Text("显示名称") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = !synced,
                 )
                 OutlinedTextField(
                     value = target,
@@ -908,6 +938,7 @@ private fun ActionEditorDialog(
                     label = { Text("Quicker 动作名称或 ID") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = !synced,
                 )
                 OutlinedTextField(
                     value = parameter,
@@ -937,6 +968,8 @@ private fun ActionEditorDialog(
                             actionTarget = target.trim(),
                             parameter = parameter,
                             confirmBeforeRun = confirm,
+                            quickerActionId = action?.quickerActionId,
+                            sourceGroup = action?.sourceGroup,
                         ),
                     )
                 },

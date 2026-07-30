@@ -8,6 +8,8 @@ data class SavedAction(
     val actionTarget: String,
     val parameter: String = "",
     val confirmBeforeRun: Boolean = false,
+    val quickerActionId: String? = null,
+    val sourceGroup: String? = null,
 )
 
 data class StoredConnection(
@@ -16,4 +18,5 @@ data class StoredConnection(
     val rememberPassword: Boolean = false,
     val password: String = "",
     val requiresPassword: Boolean = false,
+    val serviceActionId: String? = null,
 )

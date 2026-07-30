@@ -11,6 +11,7 @@ data class QuickerPairingConfig(
     val ipAddress: String,
     val port: Int,
     val password: String,
+    val serviceActionId: String? = null,
 )
 
 object QuickerPairingCode {
@@ -21,7 +22,8 @@ object QuickerPairingCode {
     private const val CLOUD_PUSH_PATH = "/static/pushtool.html"
     private const val MAX_PAYLOAD_LENGTH = 4_096
     private const val MAX_PASSWORD_LENGTH = 256
-    private val allowedKeys = setOf("v", "ip", "port", "code")
+    private val requiredKeys = setOf("v", "ip", "port", "code")
+    private val allowedKeys = requiredKeys + "serviceActionId"
 
     fun parse(payload: String): QuickerPairingConfig {
         val trimmed = payload.trim()
@@ -53,7 +55,7 @@ object QuickerPairingCode {
 
         val parameters = parseQuery(uri.rawQuery.orEmpty())
         require(parameters.keys.all(allowedKeys::contains)) { "配对码包含未知字段" }
-        require(parameters.keys.containsAll(allowedKeys)) { "配对码缺少必要字段" }
+        require(parameters.keys.containsAll(requiredKeys)) { "配对码缺少必要字段" }
         require(parameters["v"] == VERSION) { "配对码版本不受支持" }
 
         val ipAddress = QuickerEndpoint.normalizeIpv4(parameters["ip"].orEmpty())
@@ -66,7 +68,8 @@ object QuickerPairingCode {
         require(password.length <= MAX_PASSWORD_LENGTH && password.none(Char::isISOControl)) {
             "配对码中的验证码无效"
         }
-        return QuickerPairingConfig(ipAddress, port, password)
+        val serviceActionId = parameters["serviceActionId"]?.let(::canonicalUuid)
+        return QuickerPairingConfig(ipAddress, port, password, serviceActionId)
     }
 
     fun encode(config: QuickerPairingConfig): String {
@@ -76,8 +79,12 @@ object QuickerPairingCode {
         require(config.password.length <= MAX_PASSWORD_LENGTH && config.password.none(Char::isISOControl)) {
             "验证码无效"
         }
-        return "$SCHEME://$HOST?v=$VERSION&ip=${encodeValue(ipAddress)}&port=${config.port}" +
-            "&code=${encodeValue(config.password)}"
+        val serviceActionId = config.serviceActionId?.let(::canonicalUuid)
+        return buildString {
+            append("$SCHEME://$HOST?v=$VERSION&ip=${encodeValue(ipAddress)}&port=${config.port}")
+            append("&code=${encodeValue(config.password)}")
+            if (serviceActionId != null) append("&serviceActionId=$serviceActionId")
+        }
     }
 
     private fun parseQuery(rawQuery: String): Map<String, String> {
@@ -125,4 +132,14 @@ object QuickerPairingCode {
 
     private fun encodeValue(value: String): String =
         URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")
+
+    private fun canonicalUuid(value: String): String {
+        val uuid = runCatching { java.util.UUID.fromString(value) }
+            .getOrElse { throw IllegalArgumentException("配对码中的服务动作 ID 无效") }
+        val canonical = uuid.toString()
+        require(value.length == canonical.length && value.equals(canonical, ignoreCase = true)) {
+            "配对码中的服务动作 ID 无效"
+        }
+        return canonical
+    }
 }

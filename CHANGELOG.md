@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Open-source `Quicker Link 配对` companion action that reads the current Quicker WSS settings and generates the Android pairing QR code entirely in memory
+- One-tap synchronization of `_global` Quicker actions, including names, groups, ungrouped entries, and panel order
+- Companion-action discovery through the pairing QR code instead of relying only on a built-in action ID
+
+### Changed
+
+- Synced actions now follow Quicker renames and removals while preserving Android-side parameters and confirmation settings
+
 ## [0.2.0-alpha.1] - 2026-07-30
 
 ### Added

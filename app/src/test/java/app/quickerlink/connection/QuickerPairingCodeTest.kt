@@ -7,7 +7,12 @@ import org.junit.Test
 class QuickerPairingCodeTest {
     @Test
     fun `round trips a WSS pairing configuration`() {
-        val config = QuickerPairingConfig("192.168.1.56", 668, "a+b & c")
+        val config = QuickerPairingConfig(
+            "192.168.1.56",
+            668,
+            "a+b & c",
+            "7db7596b-3b46-4afc-ab07-c96309d30aa8",
+        )
 
         assertEquals(config, QuickerPairingCode.parse(QuickerPairingCode.encode(config)))
     }
@@ -17,6 +22,16 @@ class QuickerPairingCodeTest {
         assertEquals(
             QuickerPairingConfig("10.0.0.8", 1668, ""),
             QuickerPairingCode.parse("quickerlink://pair?v=1&ip=10.0.0.8&port=1668&code="),
+        )
+    }
+
+    @Test
+    fun `accepts legacy pairing codes without a service action id`() {
+        assertEquals(
+            null,
+            QuickerPairingCode.parse(
+                "quickerlink://pair?v=1&ip=192.168.1.2&port=668&code=x",
+            ).serviceActionId,
         )
     }
 
@@ -94,6 +109,9 @@ class QuickerPairingCodeTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             QuickerPairingCode.encode(QuickerPairingConfig("192.168.1.2", 668, "x\ny"))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            QuickerPairingCode.encode(QuickerPairingConfig("192.168.1.2", 668, "x", "not-an-id"))
         }
     }
 }

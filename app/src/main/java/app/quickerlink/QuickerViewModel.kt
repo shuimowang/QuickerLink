@@ -17,6 +17,8 @@ import app.quickerlink.connection.QuickerDiscoveryRequest
 import app.quickerlink.connection.QuickerLanDiscovery
 import app.quickerlink.connection.QuickerPairingCode
 import app.quickerlink.connection.QuickerProtocol
+import app.quickerlink.connection.QuickerGlobalActionCatalog
+import app.quickerlink.connection.QuickerGlobalActionsProtocol
 import app.quickerlink.connection.QuickerWebSocketEndpointProbe
 import app.quickerlink.data.AppPreferences
 import app.quickerlink.data.PreferenceWriteResult
@@ -62,6 +64,8 @@ data class QuickerUiState(
     val localNetworkPermissionGranted: Boolean = true,
     val localNetworkPermissionPermanentlyDenied: Boolean = false,
     val savedActions: List<SavedAction> = emptyList(),
+    val globalCatalogActionId: String = QuickerGlobalActionsProtocol.COMPANION_ACTION_ID,
+    val syncingGlobalActions: Boolean = false,
     val runningActionIds: Set<String> = emptySet(),
     val logs: List<EventLog> = emptyList(),
 )
@@ -133,6 +137,37 @@ internal fun QuickerUiState.startRunningAction(actionId: String): QuickerUiState
 internal fun QuickerUiState.finishRunningAction(actionId: String): QuickerUiState =
     copy(runningActionIds = runningActionIds - actionId)
 
+internal fun mergeGlobalActions(
+    existing: List<SavedAction>,
+    catalog: QuickerGlobalActionCatalog,
+): List<SavedAction> {
+    val syncedByActionId = existing
+        .filter { it.quickerActionId != null }
+        .associateBy { it.quickerActionId.orEmpty().lowercase() }
+    val claimedLocalIds = hashSetOf<String>()
+    val synced = catalog.actions.map { remote ->
+        val previous = syncedByActionId[remote.id] ?: existing.firstOrNull { action ->
+            action.quickerActionId == null &&
+                action.id !in claimedLocalIds &&
+                action.actionTarget.equals(remote.id, ignoreCase = true)
+        }
+        previous?.id?.let(claimedLocalIds::add)
+        SavedAction(
+            id = previous?.id ?: "quicker:${remote.id}",
+            label = remote.title,
+            actionTarget = remote.id,
+            parameter = previous?.parameter.orEmpty(),
+            confirmBeforeRun = previous?.confirmBeforeRun ?: false,
+            quickerActionId = remote.id,
+            sourceGroup = remote.group,
+        )
+    }
+    val manual = existing.filter { action ->
+        action.quickerActionId == null && action.id !in claimedLocalIds
+    }
+    return synced + manual
+}
+
 private fun StoredConnection.toReconnectConfigOrNull(): QuickerConnectionConfig? {
     if (ipAddress.isBlank() || (requiresPassword && password.isEmpty())) return null
     return QuickerConnectionConfig(ipAddress, port, password)
@@ -157,6 +192,8 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             password = knownGoodConnection.password,
             rememberPassword = knownGoodConnection.rememberPassword,
             savedActions = preferences.loadActions(),
+            globalCatalogActionId = knownGoodConnection.serviceActionId
+                ?: QuickerGlobalActionsProtocol.COMPANION_ACTION_ID,
         ),
     )
     val uiState: StateFlow<QuickerUiState> = mutableUiState.asStateFlow()
@@ -367,6 +404,8 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 ipAddress = pairing.ipAddress,
                 port = pairing.port.toString(),
                 password = pairing.password,
+                globalCatalogActionId = pairing.serviceActionId
+                    ?: QuickerGlobalActionsProtocol.COMPANION_ACTION_ID,
                 discoveryState = QuickerDiscoveryState.Idle,
                 connectionError = null,
             )
@@ -374,6 +413,8 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         startConnection(
             config = QuickerConnectionConfig(pairing.ipAddress, pairing.port, pairing.password),
             rememberPassword = state.rememberPassword,
+            serviceActionId = pairing.serviceActionId
+                ?: QuickerGlobalActionsProtocol.COMPANION_ACTION_ID,
         )
     }
 
@@ -408,6 +449,47 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             val updated = state.savedActions.filterNot { it.id == action.id }
             preferences.saveActions(updated)
             state.copy(savedActions = updated)
+        }
+    }
+
+    fun syncGlobalActions() {
+        val state = mutableUiState.value
+        if (state.connectionState !is QuickerConnectionState.Ready) {
+            mutableNotices.tryEmit(UiNotice.Error("请先连接 Quicker"))
+            return
+        }
+        if (state.syncingGlobalActions) return
+
+        mutableUiState.update { it.copy(syncingGlobalActions = true) }
+        viewModelScope.launch {
+            try {
+                val response = connectionManager.sendCommand(
+                    operation = "action",
+                    action = state.globalCatalogActionId,
+                    data = QuickerGlobalActionsProtocol.LIST_COMMAND,
+                    wait = true,
+                )
+                if (response.isSuccess == false) {
+                    throw IllegalStateException(
+                        response.message
+                            ?: QuickerProtocol.displayData(response.data)
+                            ?: "Quicker 拒绝读取全局动作",
+                    )
+                }
+                val catalog = QuickerGlobalActionsProtocol.parse(response.data)
+                mutableUiState.update { current ->
+                    val updated = mergeGlobalActions(current.savedActions, catalog)
+                    preferences.saveActions(updated)
+                    current.copy(savedActions = updated)
+                }
+                mutableNotices.emit(UiNotice.Success("已同步 ${catalog.actions.size} 个全局动作"))
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                mutableNotices.emit(UiNotice.Error(error.message ?: "同步全局动作失败"))
+            } finally {
+                mutableUiState.update { it.copy(syncingGlobalActions = false) }
+            }
         }
     }
 
@@ -519,13 +601,18 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun startConnection(config: QuickerConnectionConfig, rememberPassword: Boolean) {
+    private fun startConnection(
+        config: QuickerConnectionConfig,
+        rememberPassword: Boolean,
+        serviceActionId: String = mutableUiState.value.globalCatalogActionId,
+    ) {
         val connectionToPersist = StoredConnection(
             ipAddress = config.ipAddress,
             port = config.port,
             rememberPassword = rememberPassword,
             password = config.password,
             requiresPassword = config.password.isNotEmpty(),
+            serviceActionId = serviceActionId,
         )
         runCatching {
             QuickerEndpoint.url(config)

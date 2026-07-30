@@ -31,12 +31,14 @@ The WSS handshake is not treated as a durable device identity. Users on an untru
 Quicker Link's pairing format is independent from Quicker's cloud push QR code:
 
 ```text
-quickerlink://pair?v=1&ip=192.168.1.56&port=668&code=<percent-encoded-verification-code>
+quickerlink://pair?v=1&ip=192.168.1.56&port=668&code=<percent-encoded-verification-code>&serviceActionId=<GUID>
 ```
 
-The parser requires schema version `1`, a private IPv4 address, a valid port, bounded control-character-free credentials, unique known fields, and implicit WSS transport. HTTP(S), cloud push, public-IP, cleartext-WS, and unknown-version payloads are rejected.
+The parser requires schema version `1`, a private IPv4 address, a valid port, bounded control-character-free credentials, unique known fields, and implicit WSS transport. `serviceActionId` is an optional canonical GUID for backward compatibility with older or manually generated codes; the companion action always includes its current action ID. HTTP(S), cloud push, public-IP, cleartext-WS, and unknown-version payloads are rejected.
 
 The configured port is required. One official WSS example omits it, but the explanatory text and official sample client both include it. Quicker's example client commonly defaults to `668`; the actual WebSocket port configured on the computer remains authoritative.
+
+The repository includes a companion Quicker action under [`quicker`](../quicker). It reads `WebsocketServerSettings` from the running Quicker instance, requires secure transport, selects from active private IPv4 addresses, and generates this payload locally with Quicker's bundled QRCoder library. It does not create a second credential or change the configured verification code.
 
 ## Message types
 
@@ -78,6 +80,45 @@ Response:
   "data": "result"
 }
 ```
+
+## Global action catalog
+
+The companion action defines a Quicker Link-specific catalog command on top of Quicker's normal `action` operation. It is not an additional official Quicker protocol:
+
+```json
+{
+  "messageType": 2,
+  "serial": 3,
+  "operation": "action",
+  "action": "<serviceActionId from the pairing code>",
+  "data": "quickerlink:list-global-actions:v1",
+  "wait": true
+}
+```
+
+Quicker returns the action result in the outer response's `data` field as a JSON string. After decoding that string, a successful catalog has this form:
+
+```json
+{
+  "protocol": "quickerlink.global-actions",
+  "version": 1,
+  "ok": true,
+  "scene": "_global",
+  "groups": ["常用"],
+  "actions": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "title": "打开项目",
+      "group": "常用",
+      "order": 4
+    }
+  ]
+}
+```
+
+`groups` preserves the explicit Quicker panel group order. `group` is `null` for an ungrouped action, and `order` is the original `_global` panel entry index, so gaps are valid. The service excludes itself, uses the first placement when one action is placed more than once, caps the result at 500 actions and 100 groups, and returns no source code, internal parameters, icons, or app-specific actions.
+
+Errors use the same protocol and version with `ok:false`, a stable `code`, and a bounded human-readable `error`. The Android client validates payload size, UUIDs, group references, and strictly increasing original order before replacing its synchronized entries. Manual entries remain untouched.
 
 The official schema associates responses through `replyTo`, although some file-transfer examples contain conflicting casing and correlation values. Quicker Link gives every outgoing request a unique `serial`, accepts response field names case-insensitively, fails pending requests when the connection closes, and never replays commands automatically.
 

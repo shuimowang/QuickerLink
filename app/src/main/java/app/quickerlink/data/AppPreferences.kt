@@ -47,6 +47,7 @@ class AppPreferences(context: Context) : QuickerPreferences {
             rememberPassword = rememberPassword,
             password = if (rememberPassword) decrypt(preferences.getString(KEY_PASSWORD, null)).orEmpty() else "",
             requiresPassword = preferences.getBoolean(KEY_REQUIRES_PASSWORD, false),
+            serviceActionId = preferences.getString(KEY_SERVICE_ACTION_ID, null),
         )
     }
 
@@ -69,6 +70,8 @@ class AppPreferences(context: Context) : QuickerPreferences {
                 remove(LEGACY_KEY_SECURE)
                 putBoolean(KEY_REMEMBER_PASSWORD, connection.rememberPassword)
                 putBoolean(KEY_REQUIRES_PASSWORD, connection.requiresPassword)
+                connection.serviceActionId?.let { putString(KEY_SERVICE_ACTION_ID, it) }
+                    ?: remove(KEY_SERVICE_ACTION_ID)
                 if (encryptedPassword != null) {
                     putString(KEY_PASSWORD, encryptedPassword)
                 } else {
@@ -163,6 +166,7 @@ class AppPreferences(context: Context) : QuickerPreferences {
         const val LEGACY_KEY_SECURE = "secure"
         const val KEY_REMEMBER_PASSWORD = "remember_password"
         const val KEY_REQUIRES_PASSWORD = "requires_password"
+        const val KEY_SERVICE_ACTION_ID = "service_action_id"
         const val KEY_PASSWORD = "password_v1"
         const val KEY_ACTIONS = "saved_actions_v1"
         const val KEY_ALIAS = "quicker_link_connection_password_v1"
