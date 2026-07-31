@@ -17,9 +17,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.InstallMobile
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Sync
@@ -27,6 +29,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -47,6 +50,8 @@ import app.quickerlink.R
 
 internal object ProductLinks {
     const val PROJECT = "https://github.com/shuimowang/QuickerLink"
+    const val COMPANION_ACTION =
+        "https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba"
     const val FEEDBACK =
         "https://github.com/shuimowang/QuickerLink/issues/new?template=bug_report.yml"
     const val AUTHOR =
@@ -58,6 +63,8 @@ internal fun AboutScreen(
     state: QuickerUiState,
     contentPadding: PaddingValues,
     onCheckForUpdates: () -> Unit,
+    onDownloadAndInstall: () -> Unit,
+    onInstallUpdate: () -> Unit,
     onOpenExternalUrl: (String) -> Unit,
 ) {
     LazyColumn(
@@ -78,12 +85,14 @@ internal fun AboutScreen(
                 state = state.updateState,
                 currentVersionName = state.appVersionName,
                 onCheckForUpdates = onCheckForUpdates,
+                onDownloadAndInstall = onDownloadAndInstall,
+                onInstallUpdate = onInstallUpdate,
                 onOpenRelease = onOpenExternalUrl,
             )
         }
         item {
             Text(
-                "只在手动检查时访问 GitHub Releases",
+                "不会后台检查或自动下载；仅在你主动操作时访问 GitHub",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -189,6 +198,8 @@ private fun UpdateSection(
     state: AppUpdateState,
     currentVersionName: String,
     onCheckForUpdates: () -> Unit,
+    onDownloadAndInstall: () -> Unit,
+    onInstallUpdate: () -> Unit,
     onOpenRelease: (String) -> Unit,
 ) {
     when (state) {
@@ -231,31 +242,178 @@ private fun UpdateSection(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Sync, contentDescription = null)
+                    Icon(Icons.Outlined.Download, contentDescription = null)
                     Spacer(Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text("发现新版本", style = MaterialTheme.typography.titleMedium)
-                        Text("v${state.versionName}", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "当前 v$currentVersionName，可更新至 v${state.release.versionName}",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
                     }
                 }
                 Button(
-                    onClick = { onOpenRelease(state.pageUrl) },
+                    onClick = onDownloadAndInstall,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Outlined.Download, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("下载并安装")
+                }
+                TextButton(
+                    onClick = { onOpenRelease(state.release.pageUrl) },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("前往 GitHub 下载")
+                    Text("浏览器打开发布页")
                 }
+                Text(
+                    "下载完成并通过安全校验后，将由 Android 系统安装器请你确认。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                )
             }
         }
 
-        AppUpdateState.Failed -> UpdateResultRow(
-            icon = Icons.Outlined.ErrorOutline,
-            title = "检查失败",
-            detail = "当前网络可能无法访问 GitHub",
-            actionLabel = "重试",
-            onAction = onCheckForUpdates,
-        )
+        is AppUpdateState.Downloading -> Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "正在下载 v${state.release.versionName}",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        "${state.percent.coerceIn(0, 100)}%",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                LinearProgressIndicator(
+                    progress = { state.percent.coerceIn(0, 100) / 100f },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "请保持网络连接。下载只会在你手动发起后进行。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        is AppUpdateState.Verifying -> Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("正在安全校验安装包", style = MaterialTheme.typography.titleMedium)
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text(
+                    "正在核对文件完整性、应用身份、版本和签名；只有全部通过才会交给系统安装器。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        is AppUpdateState.ReadyToInstall -> Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.CheckCircle, contentDescription = null)
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("安装包已准备好", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "v${state.install.release.versionName} 已通过完整性、应用身份和签名校验",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+                Button(
+                    onClick = onInstallUpdate,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Outlined.InstallMobile, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("打开系统安装器")
+                }
+                Text(
+                    "Android 会显示安装确认；首次使用时可能需要授权“安装未知应用”。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                )
+            }
+        }
+
+        is AppUpdateState.Failed -> if (state.release == null) {
+            UpdateResultRow(
+                icon = Icons.Outlined.ErrorOutline,
+                title = "检查失败",
+                detail = state.message,
+                actionLabel = "重试",
+                onAction = onCheckForUpdates,
+            )
+        } else {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Icon(Icons.Outlined.ErrorOutline, contentDescription = null)
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("下载或校验失败", style = MaterialTheme.typography.titleMedium)
+                            Text(state.message, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    Button(
+                        onClick = onDownloadAndInstall,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Outlined.Download, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("重新下载并安装")
+                    }
+                    TextButton(
+                        onClick = { onOpenRelease(state.release.pageUrl) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("浏览器打开发布页")
+                    }
+                }
+            }
+        }
     }
 }
 

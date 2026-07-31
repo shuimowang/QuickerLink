@@ -2,9 +2,11 @@
 
 ## Supported versions
 
-There is no stable production release yet. `v0.2.0-alpha.3` is a dedicated-key-signed prerelease for testing and receives fixes on a best-effort basis. Pre-release builds may change storage or protocol behavior without backward compatibility.
+There is no stable production release yet. `v0.2.0-alpha.4` is a dedicated-key-signed prerelease for testing and receives fixes on a best-effort basis. Pre-release builds may change storage or protocol behavior without backward compatibility.
 
 GitHub Releases publish neither debug-signed nor unsigned APKs. Verify the downloaded release APK against the SHA-256 file attached to the same release. A matching checksum verifies bytes; trust in the first installation still depends on obtaining it from the authentic project release page. Subsequent versions must retain the dedicated signing key so Android can verify update continuity.
+
+The in-app updater is manual-only. It accepts exact release asset names and trusted GitHub release URLs, streams downloads into the app cache with size and timeout limits, and verifies SHA-256, package name, newer version code/name, and the installed signing certificate before exposing the APK through a narrowly scoped `FileProvider`. Android's system installer remains responsible for user confirmation and the unknown-app-source permission.
 
 The dedicated Release signing certificate has this SHA-256 fingerprint:
 
@@ -27,5 +29,6 @@ Do not include real Quicker verification codes, private IP mappings, action para
 - Pairing QR codes contain the verification code. Generate and scan them locally, never publish them, and regenerate the code after suspected disclosure.
 - The app does not make a LAN service safe to expose directly to the public internet.
 - Triggered Quicker actions run with the permissions and side effects defined by the user on the computer.
+- Action triggers are dispatched without waiting for completion, so an accepted send does not prove that the computer-side action finished successfully.
 - Remote action icons are restricted to HTTPS resources under `files.getquicker.net/_icons/` or `files.getquicker.net/_system/`; rendered PNG data is size- and signature-validated before display.
 - Android backup and device-transfer rules exclude app preferences and the other app data domains, but this does not protect data extracted from a rooted or otherwise compromised device.

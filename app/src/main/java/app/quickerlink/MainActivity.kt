@@ -1,6 +1,7 @@
 package app.quickerlink
 
 import android.Manifest
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -17,16 +18,22 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.mutableStateOf
 import app.quickerlink.ui.QuickerApp
 import app.quickerlink.ui.theme.QuickerLinkTheme
+import app.quickerlink.update.FILE_PROVIDER_AUTHORITY
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val viewModel: QuickerViewModel by viewModels()
     private val cameraPermissionGranted = mutableStateOf(false)
     private val cameraPermissionPermanentlyDenied = mutableStateOf(false)
+    private var pendingInstallUri: Uri? = null
     private val processLifecycleObserver = object : DefaultLifecycleObserver {
         override fun onStart(owner: LifecycleOwner) = viewModel.onAppForegrounded()
 
@@ -49,6 +56,18 @@ class MainActivity : ComponentActivity() {
             !ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.CAMERA)
     }
 
+    private val unknownAppsSettingsLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val uri = pendingInstallUri ?: return@registerForActivityResult
+        if (canInstallPackages()) {
+            launchPackageInstaller(uri)
+        } else {
+            pendingInstallUri = null
+            viewModel.reportInstallerError("需要允许 Quicker Link 安装未知应用后才能继续")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -56,6 +75,11 @@ class MainActivity : ComponentActivity() {
         viewModel.onLocalNetworkPermissionStatus(hasLocalNetworkPermission())
         cameraPermissionGranted.value = hasCameraPermission()
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.installRequests.collect(::beginUpdateInstallation)
+            }
+        }
 
         setContent {
             QuickerLinkTheme {
@@ -117,11 +141,20 @@ class MainActivity : ComponentActivity() {
         val uri = value.toUri()
         val host = uri.host?.lowercase().orEmpty()
         val path = uri.path.orEmpty()
-        val allowed = uri.scheme.equals("https", ignoreCase = true) && when (host) {
-            "github.com" -> path.startsWith("/shuimowang/QuickerLink")
-            "getquicker.net" -> path.startsWith("/User/Actions/743590-")
-            else -> false
-        }
+        val allowed = uri.scheme.equals("https", ignoreCase = true) &&
+            uri.userInfo == null &&
+            uri.port == -1 &&
+            uri.fragment == null &&
+            when (host) {
+                "github.com" -> path.startsWith("/shuimowang/QuickerLink")
+                "getquicker.net" -> path.startsWith("/User/Actions/743590-") ||
+                    (
+                        path.equals("/Sharedaction", ignoreCase = true) &&
+                            uri.queryParameterNames == setOf("code") &&
+                            uri.getQueryParameter("code") == COMPANION_ACTION_CODE
+                        )
+                else -> false
+            }
         if (!allowed) {
             Toast.makeText(this, "无法打开这个链接", Toast.LENGTH_SHORT).show()
             return
@@ -136,7 +169,46 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun beginUpdateInstallation(uri: Uri) {
+        if (uri.scheme != "content" || uri.authority != FILE_PROVIDER_AUTHORITY) {
+            viewModel.reportInstallerError("安装包地址无效，已停止安装")
+            return
+        }
+        if (canInstallPackages()) {
+            launchPackageInstaller(uri)
+            return
+        }
+
+        pendingInstallUri = uri
+        runCatching {
+            unknownAppsSettingsLauncher.launch(
+                Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.fromParts("package", packageName, null),
+                ),
+            )
+        }.onFailure {
+            pendingInstallUri = null
+            viewModel.reportInstallerError("无法打开“安装未知应用”设置")
+        }
+    }
+
+    private fun canInstallPackages(): Boolean = packageManager.canRequestPackageInstalls()
+
+    private fun launchPackageInstaller(uri: Uri) {
+        pendingInstallUri = null
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, APK_MIME_TYPE)
+            clipData = ClipData.newRawUri("Quicker Link update", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching { startActivity(intent) }
+            .onFailure { viewModel.reportInstallerError("无法打开系统安装器") }
+    }
+
     private companion object {
         const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
+        const val COMPANION_ACTION_CODE = "b02b2732-f087-4e45-416d-08deee3e76ba"
+        const val APK_MIME_TYPE = "application/vnd.android.package-archive"
     }
 }

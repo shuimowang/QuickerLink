@@ -10,7 +10,7 @@ body:
     id: app-version
     attributes:
       label: Quicker Link 版本
-      placeholder: 例如 0.2.0-alpha.3
+      placeholder: 例如 0.2.0-alpha.4
     validations:
       required: true
   - type: input

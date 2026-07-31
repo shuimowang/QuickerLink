@@ -8,6 +8,7 @@ import app.quickerlink.connection.QuickerPanelActionCatalog
 import app.quickerlink.connection.QuickerPanelActionsProtocol
 import app.quickerlink.data.SavedAction
 import app.quickerlink.data.StoredConnection
+import app.quickerlink.update.UpdateFailure
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -107,6 +108,14 @@ class QuickerViewModelStateTest {
         assertEquals(setOf("first", "second"), secondStarted?.runningActionIds)
         assertFalse("first" in requireNotNull(secondStarted).finishRunningAction("first").runningActionIds)
         assertTrue("second" in secondStarted.finishRunningAction("first").runningActionIds)
+    }
+
+    @Test
+    fun updateFailuresUseActionableMessagesWithoutExposingInternalErrors() {
+        assertEquals("下载失败，请检查网络后重试", updateFailureMessage(UpdateFailure.Network))
+        assertEquals("安装包校验失败，已停止更新", updateFailureMessage(UpdateFailure.ChecksumMismatch))
+        assertEquals("安装包身份验证失败，已停止更新", updateFailureMessage(UpdateFailure.SignatureMismatch))
+        assertEquals("发布文件不符合安全要求，已停止更新", updateFailureMessage(UpdateFailure.UntrustedUrl))
     }
 
     @Test

@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.2.0-alpha.4] - 2026-07-31
+
+### Added
+
+- Manually download, verify, and hand a newer signed APK to Android's system installer without navigating through GitHub
+- Show the Quicker companion-action page when panel synchronization cannot obtain the global/common catalog
+- Add an embedded GitHub icon and repository link to the pairing window, remove its redundant footer close button, and show it non-modally
+
+### Changed
+
+- Dispatch action triggers with `wait=false` and return the Android UI immediately instead of waiting for long-running Quicker actions to finish
+- Verify update asset names, URLs, sizes, SHA-256, package identity, version, and signing certificate before installation
+
 ## [0.2.0-alpha.3] - 2026-07-31
 
 ### Changed

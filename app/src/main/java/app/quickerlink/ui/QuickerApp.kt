@@ -248,6 +248,8 @@ fun QuickerApp(
                 state = state,
                 contentPadding = innerPadding,
                 onCheckForUpdates = viewModel::checkForUpdates,
+                onDownloadAndInstall = viewModel::downloadAndInstallUpdate,
+                onInstallUpdate = viewModel::requestUpdateInstallation,
                 onOpenExternalUrl = onOpenExternalUrl,
             )
         }
@@ -271,6 +273,32 @@ fun QuickerApp(
                 viewModel.connectFromPairingCode(payload)
             },
             onDismiss = { showPairingScanner = false },
+        )
+    }
+
+    if (state.companionActionPromptVisible) {
+        AlertDialog(
+            onDismissRequest = viewModel::dismissCompanionActionPrompt,
+            icon = { Icon(Icons.Outlined.Link, contentDescription = null) },
+            title = { Text("需要 Quicker Link 动作") },
+            text = {
+                Text("刷新面板动作需要先在电脑上安装或更新配套的 Quicker Link 动作。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.dismissCompanionActionPrompt()
+                        onOpenExternalUrl(ProductLinks.COMPANION_ACTION)
+                    },
+                ) {
+                    Text("打开动作网页")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::dismissCompanionActionPrompt) {
+                    Text("稍后")
+                }
+            },
         )
     }
 }
@@ -713,7 +741,7 @@ private fun SavedActionTile(
             .semantics {
                 contentDescription = "${action.label}，$details"
                 stateDescription = when {
-                    running -> "正在执行"
+                    running -> "正在发送"
                     enabled -> "可以执行"
                     else -> "Quicker 未连接"
                 }

@@ -159,7 +159,6 @@ class QuickerConnectionManager private constructor(
         operation: String,
         data: String? = null,
         action: String? = null,
-        wait: Boolean = true,
         timeoutMs: Long = DEFAULT_COMMAND_TIMEOUT_MS,
     ): QuickerMessage {
         require(operation.isNotBlank()) { "操作类型不能为空" }
@@ -170,7 +169,7 @@ class QuickerConnectionManager private constructor(
             operation = operation,
             data = data,
             action = action,
-            wait = wait,
+            wait = true,
         )
 
         val sent = synchronized(lock) {
@@ -202,6 +201,38 @@ class QuickerConnectionManager private constructor(
         } finally {
             synchronized(lock) { pending.remove(requestSerial) }
         }
+    }
+
+    fun dispatchCommand(
+        operation: String,
+        data: String? = null,
+        action: String? = null,
+    ) {
+        require(operation.isNotBlank()) { "操作类型不能为空" }
+        val payload = QuickerProtocol.commandRequest(
+            serial = nextSerial(),
+            operation = operation,
+            data = data,
+            action = action,
+            wait = false,
+        )
+
+        val sent = synchronized(lock) {
+            val token = generation.get()
+            val currentSocket = socket
+            check(readyGeneration == token && currentSocket != null) { "尚未连接到 Quicker" }
+            currentSocket.send(payload)
+        }
+        if (!sent) {
+            throw IllegalStateException("消息未能加入发送队列")
+        }
+
+        mutableEvents.tryEmit(
+            QuickerConnectionEvent(
+                direction = QuickerEventDirection.OUTGOING,
+                summary = if (operation == "action") "发送动作：${action.orEmpty()}" else "发送操作：$operation",
+            ),
+        )
     }
 
     fun isCommandCurrent(command: QuickerIncomingCommand): Boolean = synchronized(lock) {

@@ -1,5 +1,6 @@
 package app.quickerlink.connection
 
+import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -86,6 +87,61 @@ class QuickerConnectionManagerTest {
         }
         assertEquals(expectedSerials, received.map { it.message.serial })
         assertFalse(received.any { it.message.serial == 10L })
+        manager.close()
+    }
+
+    @Test
+    fun `dispatch sends wait false and returns without a response`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+
+        manager.connect(CONFIG)
+        val socket = factory.latestSocket()
+        socket.open()
+        socket.receive("""{"messageType":6,"replyTo":1,"isSuccess":true}""")
+
+        withTimeout(100L) {
+            manager.dispatchCommand(
+                operation = "action",
+                action = "action-id",
+                data = "parameter",
+            )
+        }
+
+        val request = socket.sentTexts
+            .map(JsonParser::parseString)
+            .map { it.asJsonObject }
+            .last { it.get("messageType").asInt == QuickerProtocol.MESSAGE_COMMAND }
+        assertEquals("action", request.get("operation").asString)
+        assertEquals("action-id", request.get("action").asString)
+        assertEquals("parameter", request.get("data").asString)
+        assertFalse(request.get("wait").asBoolean)
+        manager.close()
+    }
+
+    @Test
+    fun `dispatch fails immediately when websocket rejects the frame`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+
+        manager.connect(CONFIG)
+        val socket = factory.latestSocket()
+        socket.open()
+        socket.receive("""{"messageType":6,"replyTo":1,"isSuccess":true}""")
+        socket.acceptTextSends = false
+
+        val failure = runCatching {
+            manager.dispatchCommand(operation = "action", action = "action-id")
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertEquals("消息未能加入发送队列", failure?.message)
         manager.close()
     }
 
@@ -248,6 +304,9 @@ private class FakeWebSocket(
     var onTextSend: ((String) -> Unit)? = null
 
     @Volatile
+    var acceptTextSends = true
+
+    @Volatile
     private var active = true
 
     override fun request(): Request = originalRequest
@@ -255,7 +314,7 @@ private class FakeWebSocket(
     override fun queueSize(): Long = 0L
 
     override fun send(text: String): Boolean {
-        if (!active) return false
+        if (!active || !acceptTextSends) return false
         onTextSend?.invoke(text)
         sentTexts += text
         return true

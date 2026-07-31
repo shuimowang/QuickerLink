@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.quickerlink.connection.QuickerConnectionConfig
@@ -25,8 +26,13 @@ import app.quickerlink.data.PreferenceWriteResult
 import app.quickerlink.data.QuickerPreferences
 import app.quickerlink.data.SavedAction
 import app.quickerlink.data.StoredConnection
+import app.quickerlink.update.AppRelease
+import app.quickerlink.update.AppUpdateDownloader
 import app.quickerlink.update.GitHubUpdateChecker
+import app.quickerlink.update.InstallReady
 import app.quickerlink.update.UpdateCheckResult
+import app.quickerlink.update.UpdateFailure
+import app.quickerlink.update.UpdateInstallException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -68,6 +74,7 @@ data class QuickerUiState(
     val savedActions: List<SavedAction> = emptyList(),
     val catalogActionId: String = QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
     val syncingPanelActions: Boolean = false,
+    val companionActionPromptVisible: Boolean = false,
     val runningActionIds: Set<String> = emptySet(),
     val logs: List<EventLog> = emptyList(),
     val appVersionName: String = BuildConfig.VERSION_NAME,
@@ -83,11 +90,17 @@ sealed interface AppUpdateState {
     data object Idle : AppUpdateState
     data object Checking : AppUpdateState
     data object UpToDate : AppUpdateState
-    data class Available(
-        val versionName: String,
-        val pageUrl: String,
+    data class Available(val release: AppRelease) : AppUpdateState
+    data class Downloading(
+        val release: AppRelease,
+        val percent: Int,
     ) : AppUpdateState
-    data object Failed : AppUpdateState
+    data class Verifying(val release: AppRelease) : AppUpdateState
+    data class ReadyToInstall(val install: InstallReady) : AppUpdateState
+    data class Failed(
+        val message: String,
+        val release: AppRelease? = null,
+    ) : AppUpdateState
 }
 
 internal class ConnectionSession(initialConfig: QuickerConnectionConfig?) {
@@ -208,6 +221,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     private val preferences: QuickerPreferences = AppPreferences(application)
     private val connectionManager = QuickerConnectionManager()
     private val updateChecker = GitHubUpdateChecker()
+    private val updateDownloader = AppUpdateDownloader(application)
     private val subnetProvider = AndroidIpv4SubnetProvider(application)
     private val lanDiscovery = QuickerLanDiscovery(QuickerWebSocketEndpointProbe())
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
@@ -233,6 +247,9 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
     private val mutableNotices = MutableSharedFlow<UiNotice>(extraBufferCapacity = 8)
     val notices: SharedFlow<UiNotice> = mutableNotices.asSharedFlow()
+
+    private val mutableInstallRequests = MutableSharedFlow<Uri>(extraBufferCapacity = 1)
+    val installRequests: SharedFlow<Uri> = mutableInstallRequests.asSharedFlow()
 
     init {
         viewModelScope.launch {
@@ -502,7 +519,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     operation = "action",
                     action = state.catalogActionId,
                     data = QuickerPanelActionsProtocol.LIST_COMMAND,
-                    wait = true,
                 )
                 if (response.isSuccess == false) {
                     throw IllegalStateException(
@@ -515,7 +531,10 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 mutableUiState.update { current ->
                     val updated = mergePanelActions(current.savedActions, catalog)
                     preferences.saveActions(updated)
-                    current.copy(savedActions = updated)
+                    current.copy(
+                        savedActions = updated,
+                        companionActionPromptVisible = false,
+                    )
                 }
                 mutableNotices.emit(
                     UiNotice.Success("已同步 ${catalog.actions.size} 个全局与通用动作"),
@@ -523,6 +542,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
+                mutableUiState.update { it.copy(companionActionPromptVisible = true) }
                 mutableNotices.emit(UiNotice.Error(error.message ?: "同步动作失败"))
             } finally {
                 mutableUiState.update { it.copy(syncingPanelActions = false) }
@@ -536,33 +556,22 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         if (!reserveAction(action.id)) {
-            mutableNotices.tryEmit(UiNotice.Error("“${action.label}”正在执行"))
+            mutableNotices.tryEmit(UiNotice.Error("“${action.label}”正在发送"))
             return
         }
 
         viewModelScope.launch {
             try {
-                runCatching {
-                    connectionManager.sendCommand(
-                        operation = "action",
-                        action = action.actionTarget,
-                        data = action.parameter.takeIf(String::isNotEmpty),
-                        wait = true,
-                    )
-                }.onSuccess { response ->
-                    if (response.isSuccess == false) {
-                        mutableNotices.emit(
-                            UiNotice.Error(
-                                response.message ?: QuickerProtocol.displayData(response.data) ?: "动作执行失败",
-                            ),
-                        )
-                    } else {
-                        val result = QuickerProtocol.displayData(response.data)?.takeIf(String::isNotBlank)
-                        mutableNotices.emit(UiNotice.Success(result ?: "“${action.label}”已执行"))
-                    }
-                }.onFailure { error ->
-                    mutableNotices.emit(UiNotice.Error(error.message ?: "动作执行失败"))
-                }
+                connectionManager.dispatchCommand(
+                    operation = "action",
+                    action = action.actionTarget,
+                    data = action.parameter.takeIf(String::isNotEmpty),
+                )
+                mutableNotices.emit(UiNotice.Success("“${action.label}”已发送"))
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                mutableNotices.emit(UiNotice.Error(error.message ?: "动作发送失败"))
             } finally {
                 mutableUiState.update { it.finishRunningAction(action.id) }
             }
@@ -581,7 +590,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch {
             runCatching {
-                connectionManager.sendCommand(operation = operation, data = text, wait = true)
+                connectionManager.sendCommand(operation = operation, data = text)
             }.onSuccess { response ->
                 if (response.isSuccess == false) {
                     mutableNotices.emit(UiNotice.Error(response.message ?: "发送失败"))
@@ -596,8 +605,19 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
     fun clearLogs() = mutableUiState.update { it.copy(logs = emptyList()) }
 
+    fun dismissCompanionActionPrompt() = mutableUiState.update {
+        it.copy(companionActionPromptVisible = false)
+    }
+
     fun checkForUpdates() {
-        if (mutableUiState.value.updateState is AppUpdateState.Checking) return
+        when (mutableUiState.value.updateState) {
+            AppUpdateState.Checking,
+            is AppUpdateState.Downloading,
+            is AppUpdateState.Verifying,
+            -> return
+
+            else -> Unit
+        }
         mutableUiState.update { it.copy(updateState = AppUpdateState.Checking) }
 
         viewModelScope.launch {
@@ -608,10 +628,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 mutableUiState.update { state ->
                     state.copy(
                         updateState = when (result) {
-                            is UpdateCheckResult.Available -> AppUpdateState.Available(
-                                versionName = result.release.versionName,
-                                pageUrl = result.release.pageUrl,
-                            )
+                            is UpdateCheckResult.Available -> AppUpdateState.Available(result.release)
                             is UpdateCheckResult.UpToDate -> AppUpdateState.UpToDate
                         },
                     )
@@ -622,10 +639,69 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (_: Exception) {
-                mutableUiState.update { it.copy(updateState = AppUpdateState.Failed) }
-                mutableNotices.emit(UiNotice.Error("暂时无法连接 GitHub，请稍后重试"))
+                val message = "暂时无法连接 GitHub，请稍后重试"
+                mutableUiState.update { it.copy(updateState = AppUpdateState.Failed(message)) }
+                mutableNotices.emit(UiNotice.Error(message))
             }
         }
+    }
+
+    fun downloadAndInstallUpdate() {
+        val release = when (val updateState = mutableUiState.value.updateState) {
+            is AppUpdateState.Available -> updateState.release
+            is AppUpdateState.Failed -> updateState.release
+            else -> null
+        } ?: return
+
+        mutableUiState.update {
+            it.copy(updateState = AppUpdateState.Downloading(release, percent = 0))
+        }
+        viewModelScope.launch {
+            try {
+                val install = withContext(Dispatchers.IO) {
+                    updateDownloader.downloadAndVerify(release) { progress ->
+                        val percent = (progress.fraction * 100f).toInt().coerceIn(0, 100)
+                        mutableUiState.update { state ->
+                            state.copy(
+                                updateState = if (percent >= 100) {
+                                    AppUpdateState.Verifying(release)
+                                } else {
+                                    AppUpdateState.Downloading(release, percent)
+                                },
+                            )
+                        }
+                    }
+                }
+                mutableUiState.update {
+                    it.copy(updateState = AppUpdateState.ReadyToInstall(install))
+                }
+                mutableNotices.emit(UiNotice.Success("安装包校验通过，正在打开系统安装器"))
+                mutableInstallRequests.emit(install.contentUri)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: UpdateInstallException) {
+                val message = updateFailureMessage(error.failure)
+                mutableUiState.update {
+                    it.copy(updateState = AppUpdateState.Failed(message, release))
+                }
+                mutableNotices.emit(UiNotice.Error(message))
+            } catch (_: Exception) {
+                val message = "更新失败，请稍后重试"
+                mutableUiState.update {
+                    it.copy(updateState = AppUpdateState.Failed(message, release))
+                }
+                mutableNotices.emit(UiNotice.Error(message))
+            }
+        }
+    }
+
+    fun requestUpdateInstallation() {
+        val install = (mutableUiState.value.updateState as? AppUpdateState.ReadyToInstall)?.install ?: return
+        mutableInstallRequests.tryEmit(install.contentUri)
+    }
+
+    fun reportInstallerError(message: String) {
+        mutableNotices.tryEmit(UiNotice.Error(message))
     }
 
     private suspend fun handleConnectionState(connectionState: QuickerConnectionState) {
@@ -772,9 +848,30 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         discoveryJob?.cancel()
         connectionManager.close()
         updateChecker.close()
+        updateDownloader.close()
     }
 
     private companion object {
         const val MAX_LOG_COUNT = 100
     }
+}
+
+internal fun updateFailureMessage(failure: UpdateFailure): String = when (failure) {
+    UpdateFailure.Network -> "下载失败，请检查网络后重试"
+    UpdateFailure.DownloadTooLarge -> "安装包大小异常，已停止更新"
+    UpdateFailure.InvalidChecksum,
+    UpdateFailure.ChecksumMismatch,
+    -> "安装包校验失败，已停止更新"
+
+    UpdateFailure.WrongPackage,
+    UpdateFailure.VersionMismatch,
+    UpdateFailure.SignatureMismatch,
+    UpdateFailure.InvalidApk,
+    -> "安装包身份验证失败，已停止更新"
+
+    UpdateFailure.Storage -> "无法保存安装包，请清理存储空间后重试"
+    UpdateFailure.InvalidRelease,
+    UpdateFailure.UntrustedUrl,
+    UpdateFailure.ContentUri,
+    -> "发布文件不符合安全要求，已停止更新"
 }
