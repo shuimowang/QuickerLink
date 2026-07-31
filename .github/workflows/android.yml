@@ -3,11 +3,22 @@ name: Android CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: android-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -29,20 +40,5 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v6
 
-      - name: Test, lint, and build
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug assembleRelease --no-daemon
-
-      - name: Generate debug APK checksum
-        working-directory: app/build/outputs/apk/debug
-        run: sha256sum app-debug.apk > app-debug.apk.sha256
-
-      # The release variant is a compile check only in regular CI. This job does
-      # not receive the dedicated release key, so its output is not uploaded.
-      - name: Upload debug preview APK
-        uses: actions/upload-artifact@v7
-        with:
-          name: quicker-link-debug-preview
-          path: |
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/apk/debug/app-debug.apk.sha256
-          if-no-files-found: error
+      - name: Test and lint
+        run: ./gradlew testDebugUnitTest lintDebug --no-daemon

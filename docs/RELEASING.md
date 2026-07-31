@@ -30,7 +30,7 @@ Treat the resulting text as the private keystore itself. Do not save it in the r
 ## Publish a prerelease
 
 1. Update `versionName`, `versionCode`, and `CHANGELOG.md`; the version name must be a valid tag suffix such as `0.1.0-alpha.1`.
-2. Ensure regular CI passes `testDebugUnitTest`, `lintDebug`, `assembleDebug`, and unsigned `assembleRelease`.
+2. Ensure regular CI passes `testDebugUnitTest` and `lintDebug` for the exact commit being tagged.
 3. Create and push the matching tag, for example `v0.1.0-alpha.1`.
 4. Approve the protected `release` environment deployment if required.
 
@@ -45,4 +45,11 @@ The tag workflow then:
 - creates a GitHub prerelease containing only that APK and checksum; and
 - removes the decoded keystore even when an earlier step fails.
 
-Do not upload the regular CI debug artifact or unsigned `assembleRelease` output to a GitHub Release. Key rotation or loss requires a separately reviewed migration plan before another release is attempted.
+Do not upload a local debug APK or unsigned `assembleRelease` output to a GitHub Release. Key rotation or loss requires a separately reviewed migration plan before another release is attempted.
+
+## Verification levels
+
+- Development: run focused tests for the code being changed. Do not build an APK unless the change affects packaging, resources, manifests, or device behavior.
+- Main branch: regular CI runs the complete unit-test suite and Android Lint. New pushes cancel obsolete runs for the same branch.
+- Tagged release: the protected workflow repeats tests and Lint, builds one signed Release APK, verifies its tag, certificate, and checksum, and publishes it.
+- Device smoke test: reserve it for changes to pairing, networking, storage, permissions, updates, or user-facing workflows. Documentation and isolated unit-tested logic changes do not require reinstalling the app.

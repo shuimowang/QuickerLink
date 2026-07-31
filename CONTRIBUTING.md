@@ -8,11 +8,13 @@ This public repository covers the Android client, tests, build pipeline, and pub
 
 1. Install JDK 17 and Android SDK Platform 37.0.
 2. Enable a local Quicker WebSocket service for manual integration testing.
-3. Run the verification tasks before opening a pull request:
+3. Run the same verification tasks as regular CI before opening a pull request:
 
 ```bash
-./gradlew testDebugUnitTest lintDebug assembleDebug assembleRelease
+./gradlew testDebugUnitTest lintDebug
 ```
+
+During development, run only the focused tests affected by the change. Building an APK is not required for every source edit; the signed tag workflow owns Release packaging.
 
 On Windows, clone the repository to a path containing only ASCII characters. Gradle test workers can fail to construct their classpath when the project path contains non-ASCII characters, even though APK compilation succeeds.
 
@@ -28,9 +30,8 @@ For protocol uncertainties, reference the relevant Quicker documentation and dis
 
 ## Distribution
 
-- Regular CI uploads only a clearly named debug test artifact and its SHA-256 file; it is not a GitHub Release.
-- `assembleRelease` without signing environment variables is a compile check. Never publish its unsigned output.
-- Tag releases use the dedicated release key through GitHub Secrets and publish only after signature verification.
+- Regular CI runs unit tests and Lint. It does not package or upload an APK.
+- Tag releases repeat tests and Lint, then build with the dedicated release key through GitHub Secrets and publish only after signature verification.
 - Generate checksums from the exact APK bytes being published, then attach the matching checksum file to the same release.
 - Never publish debug-signed APKs through GitHub Releases.
 
