@@ -3,6 +3,7 @@ package app.quickerlink.connection
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import java.util.Base64
 import java.util.UUID
 
 data class QuickerPanelAction(
@@ -10,6 +11,7 @@ data class QuickerPanelAction(
     val title: String,
     val group: String?,
     val order: Int,
+    val icon: String? = null,
 )
 
 data class QuickerPanelScene(
@@ -26,25 +28,27 @@ data class QuickerPanelActionCatalog(
 }
 
 object QuickerPanelActionsProtocol {
-    const val COMPANION_ACTION_ID = "7db7596b-3b46-4afc-ab07-c96309d30aa8"
-    const val LIST_COMMAND = "quickerlink:list-panel-actions:v2"
+    const val COMPANION_SHARED_ACTION_ID = "b02b2732-f087-4e45-416d-08deee3e76ba"
+    const val LIST_COMMAND = "quickerlink:list-panel-actions:v3"
     const val GLOBAL_SCENE = "_global"
     const val COMMON_SCENE = "common"
 
     private const val PROTOCOL = "quickerlink.panel-actions"
-    private const val VERSION = 2
+    private const val VERSION = 3
     private const val MAX_PAYLOAD_LENGTH = 262_144
     private const val MAX_GROUPS_PER_SCENE = 100
     private const val MAX_ACTIONS = 500
     private const val MAX_GROUP_LENGTH = 80
     private const val MAX_TITLE_LENGTH = 160
+    private const val MAX_ICON_LENGTH = 22_000
+    private const val MAX_ICON_BYTES = 16_384
     private const val MAX_ERROR_LENGTH = 200
     private const val MAX_ERROR_CODE_LENGTH = 64
     private val expectedScenes = listOf(GLOBAL_SCENE, COMMON_SCENE)
     private val successFields = setOf("protocol", "version", "ok", "scenes")
     private val errorFields = setOf("protocol", "version", "ok", "code", "error")
     private val sceneFields = setOf("scene", "groups", "actions")
-    private val actionFields = setOf("id", "title", "group", "order")
+    private val actionFields = setOf("id", "title", "group", "order", "icon")
     private val errorCodePattern = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
     fun parse(data: JsonElement?): QuickerPanelActionCatalog {
@@ -110,11 +114,13 @@ object QuickerPanelActionsProtocol {
             require(seenOrders.add(order)) { "动作目录包含重复顺序" }
             require(order > previousOrder) { "动作顺序无效" }
             previousOrder = order
+            val icon = validateIcon(item.nullableString("icon"))
             QuickerPanelAction(
                 id = id,
                 title = title,
                 group = group,
                 order = order,
+                icon = icon,
             )
         }
         return QuickerPanelScene(scene = scene, groups = groups, actions = actions)
@@ -151,6 +157,38 @@ object QuickerPanelActionsProtocol {
             "$field 无效"
         }
         return value
+    }
+
+    private fun validateIcon(value: String?): String? {
+        if (value == null) return null
+        require(value.length in 1..MAX_ICON_LENGTH && value.none(Char::isISOControl)) {
+            "动作图标无效"
+        }
+        if (value.startsWith(PNG_DATA_PREFIX)) {
+            val bytes = runCatching { Base64.getDecoder().decode(value.removePrefix(PNG_DATA_PREFIX)) }
+                .getOrElse { throw IllegalArgumentException("动作图标无效") }
+            require(bytes.size in MIN_PNG_BYTES..MAX_ICON_BYTES && bytes.startsWith(PNG_SIGNATURE)) {
+                "动作图标无效"
+            }
+            validatePngHeader(bytes)
+            return value
+        }
+
+        return QuickerIconPolicy.normalizeUrl(value)
+            ?: throw IllegalArgumentException("动作图标地址无效")
+    }
+
+    private fun validatePngHeader(bytes: ByteArray) {
+        require(bytes.readUInt32(8) == PNG_IHDR_DATA_LENGTH && bytes.matchesAt(PNG_IHDR, 12)) {
+            "动作图标无效"
+        }
+        val width = bytes.readUInt32(16)
+        val height = bytes.readUInt32(20)
+        require(
+            width in 1..MAX_ICON_DIMENSION &&
+                height in 1..MAX_ICON_DIMENSION &&
+                width * height <= MAX_ICON_PIXELS,
+        ) { "动作图标尺寸无效" }
     }
 
     private fun JsonObject.requireFields(expected: Set<String>, message: String) {
@@ -206,4 +244,33 @@ object QuickerPanelActionsProtocol {
         } else {
             throw IllegalArgumentException(missingMessage)
         }
+
+    private fun ByteArray.startsWith(prefix: ByteArray): Boolean =
+        size >= prefix.size && prefix.indices.all { index -> this[index] == prefix[index] }
+
+    private fun ByteArray.matchesAt(value: ByteArray, offset: Int): Boolean =
+        size >= offset + value.size && value.indices.all { index -> this[offset + index] == value[index] }
+
+    private fun ByteArray.readUInt32(offset: Int): Long =
+        ((this[offset].toLong() and 0xff) shl 24) or
+            ((this[offset + 1].toLong() and 0xff) shl 16) or
+            ((this[offset + 2].toLong() and 0xff) shl 8) or
+            (this[offset + 3].toLong() and 0xff)
+
+    private const val PNG_DATA_PREFIX = "data:image/png;base64,"
+    private const val MIN_PNG_BYTES = 33
+    private const val PNG_IHDR_DATA_LENGTH = 13L
+    private const val MAX_ICON_DIMENSION = 512L
+    private const val MAX_ICON_PIXELS = 262_144L
+    private val PNG_SIGNATURE = byteArrayOf(
+        0x89.toByte(),
+        0x50,
+        0x4e,
+        0x47,
+        0x0d,
+        0x0a,
+        0x1a,
+        0x0a,
+    )
+    private val PNG_IHDR = byteArrayOf(0x49, 0x48, 0x44, 0x52)
 }

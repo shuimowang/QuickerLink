@@ -13,13 +13,11 @@
 
 二维码包含当前连接验证码。关闭窗口后不要保留截图，也不要把二维码发送给其他人。
 
-## 文件
+## 安装
 
-- [`QuickerLinkPairing.cs`](QuickerLinkPairing.cs)：可审计的 C# 源码
-- [`QuickerLinkPairing.action2.json`](QuickerLinkPairing.action2.json)：完整 ActionItem2 导出
-- [`QuickerLinkIcon.png`](QuickerLinkIcon.png)：透明背景的动作图标源文件
+从 Quicker 动作库安装 [`Quicker Link`](https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba)。分享 ID：`b02b2732-f087-4e45-416d-08deee3e76ba`。
 
-当前导出已在 Quicker `2.1.4.0`、运行时 `10.0.9` 上验证。首次公开到 Quicker 动作库前，仓库不会提供一个尚不存在的分享链接。
+本目录只保留透明背景的动作图标源文件。配套动作独立发布，其维护源码和完整 ActionItem2 导出不随 Android 开源仓库分发。当前动作已在 Quicker `2.1.4.0`、运行时 `10.0.9` 上验证。
 
 ## 使用
 

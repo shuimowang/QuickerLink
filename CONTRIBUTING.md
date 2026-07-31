@@ -2,6 +2,8 @@
 
 Issues and pull requests are welcome.
 
+This public repository covers the Android client, tests, build pipeline, and public documentation. The separately distributed Quicker companion action is outside the contribution scope of this repository.
+
 ## Development setup
 
 1. Install JDK 17 and Android SDK Platform 37.0.

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.2.0-alpha.3] - 2026-07-31
+
+### Changed
+
+- Use the published Quicker companion action share ID as the stable catalog target when a pairing code does not provide a local action ID
+- Replace the one-action-per-row list with a responsive 4-6 column icon grid while retaining grouping, search, editing, deletion, confirmation, and running states
+- Upgrade the strict catalog contract to v3 and synchronize validated Quicker action icons
+- Distribute the companion action through its Quicker share page while keeping the Android client, tests, and build pipeline openly auditable
+- Remove the companion action C# source and complete ActionItem2 export from the Android repository
+
 ## [0.2.0-alpha.2] - 2026-07-31
 
 ### Added

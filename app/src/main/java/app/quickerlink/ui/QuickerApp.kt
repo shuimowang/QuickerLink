@@ -1,5 +1,9 @@
 package app.quickerlink.ui
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.Base64
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -16,6 +20,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -57,7 +65,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -82,11 +89,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -98,6 +109,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.quickerlink.EventLog
@@ -109,6 +121,9 @@ import app.quickerlink.connection.QuickerConnectionState
 import app.quickerlink.connection.QuickerEndpoint
 import app.quickerlink.connection.QuickerEventDirection
 import app.quickerlink.data.SavedAction
+import coil3.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private enum class MainDestination(val label: String, val icon: ImageVector) {
     ACTIONS("动作", Icons.Outlined.Bolt),
@@ -161,6 +176,16 @@ fun QuickerApp(
                     containerColor = MaterialTheme.colorScheme.surface,
                 ),
                 actions = {
+                    if (destination == MainDestination.ACTIONS) {
+                        IconButton(
+                            onClick = {
+                                editedAction = null
+                                showActionEditor = true
+                            },
+                        ) {
+                            Icon(Icons.Outlined.Add, contentDescription = "添加动作")
+                        }
+                    }
                     ConnectionStatusIcon(state.connectionState)
                 },
             )
@@ -178,18 +203,6 @@ fun QuickerApp(
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        floatingActionButton = {
-            if (destination == MainDestination.ACTIONS) {
-                FloatingActionButton(
-                    onClick = {
-                        editedAction = null
-                        showActionEditor = true
-                    },
-                ) {
-                    Icon(Icons.Outlined.Add, contentDescription = "添加动作")
-                }
-            }
-        },
     ) { innerPadding ->
         when (destination) {
             MainDestination.ACTIONS -> ActionsScreen(
@@ -342,63 +355,77 @@ private fun ActionsScreen(
     }
     val visibleActionCount = actionSections.sumOf { it.actions.size }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 16.dp,
-            top = contentPadding.calculateTopPadding() + 8.dp,
-            end = 16.dp,
-            bottom = contentPadding.calculateBottomPadding() + 88.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        item {
-            ConnectionSummary(
-                state = state.connectionState,
-                syncingPanelActions = state.syncingPanelActions,
-                actionCount = state.savedActions.count { it.quickerActionId != null },
-                onOpenConnection = onOpenConnection,
-                onSyncPanelActions = onSyncPanelActions,
-            )
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val columnCount = when {
+            maxWidth < 420.dp -> 4
+            maxWidth < 600.dp -> 5
+            else -> 6
         }
-
-        if (state.savedActions.isEmpty()) {
-            item {
-                EmptyActions(
-                    connected = state.connectionState is QuickerConnectionState.Ready,
-                    syncing = state.syncingPanelActions,
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(columnCount),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 12.dp,
+                top = contentPadding.calculateTopPadding() + 8.dp,
+                end = 12.dp,
+                bottom = contentPadding.calculateBottomPadding() + 88.dp,
+            ),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                ConnectionSummary(
+                    state = state.connectionState,
+                    syncingPanelActions = state.syncingPanelActions,
+                    actionCount = state.savedActions.count { it.quickerActionId != null },
                     onOpenConnection = onOpenConnection,
                     onSyncPanelActions = onSyncPanelActions,
                 )
             }
-        } else {
-            item {
-                ActionLibraryHeader(
-                    totalCount = state.savedActions.size,
-                    visibleCount = visibleActionCount,
-                    query = searchQuery,
-                    onQueryChange = { searchQuery = it },
-                )
-            }
 
-            if (actionSections.isEmpty()) {
-                item { EmptySearchResults(onClear = { searchQuery = "" }) }
+            if (state.savedActions.isEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    EmptyActions(
+                        connected = state.connectionState is QuickerConnectionState.Ready,
+                        syncing = state.syncingPanelActions,
+                        onOpenConnection = onOpenConnection,
+                        onSyncPanelActions = onSyncPanelActions,
+                    )
+                }
             } else {
-                actionSections.forEach { section ->
-                    item(key = "section:${section.key}") {
-                        ActionGroupHeader(section.title, section.actions.size)
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    ActionLibraryHeader(
+                        totalCount = state.savedActions.size,
+                        visibleCount = visibleActionCount,
+                        query = searchQuery,
+                        onQueryChange = { searchQuery = it },
+                    )
+                }
+
+                if (actionSections.isEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        EmptySearchResults(onClear = { searchQuery = "" })
                     }
-                    items(section.actions, key = SavedAction::id) { action ->
-                        SavedActionItem(
-                            action = action,
-                            enabled = state.connectionState is QuickerConnectionState.Ready,
-                            running = action.id in state.runningActionIds,
-                            onRun = {
-                                if (action.confirmBeforeRun) pendingConfirmation = action else onRun(action)
-                            },
-                            onEdit = { onEdit(action) },
-                            onDelete = { pendingDelete = action },
-                        )
+                } else {
+                    actionSections.forEach { section ->
+                        item(
+                            key = "section:${section.key}",
+                            span = { GridItemSpan(maxLineSpan) },
+                        ) {
+                            ActionGroupHeader(section.title, section.actions.size)
+                        }
+                        gridItems(section.actions, key = SavedAction::id) { action ->
+                            SavedActionTile(
+                                action = action,
+                                enabled = state.connectionState is QuickerConnectionState.Ready,
+                                running = action.id in state.runningActionIds,
+                                onRun = {
+                                    if (action.confirmBeforeRun) pendingConfirmation = action else onRun(action)
+                                },
+                                onEdit = { onEdit(action) },
+                                onDelete = { pendingDelete = action },
+                            )
+                        }
                     }
                 }
             }
@@ -660,7 +687,7 @@ private fun EmptySearchResults(onClear: () -> Unit) {
 }
 
 @Composable
-private fun SavedActionItem(
+private fun SavedActionTile(
     action: SavedAction,
     enabled: Boolean,
     running: Boolean,
@@ -669,6 +696,9 @@ private fun SavedActionItem(
     onDelete: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    val labelHeight = (34f * fontScale).dp
+    val tileHeight = (134f + 34f * (fontScale - 1f)).dp
     val details = buildList {
         add(if (action.quickerActionId != null) "${action.syncedSceneLabel()}动作" else action.actionTarget)
         if (action.parameter.isNotEmpty()) add("有参数")
@@ -678,83 +708,176 @@ private fun SavedActionItem(
     Card(
         onClick = onRun,
         enabled = !running,
-        modifier = Modifier.semantics {
-            stateDescription = when {
-                running -> "正在执行"
-                enabled -> "可以执行"
-                else -> "Quicker 未连接"
-            }
-        },
+        modifier = Modifier
+            .height(tileHeight)
+            .semantics {
+                contentDescription = "${action.label}，$details"
+                stateDescription = when {
+                    running -> "正在执行"
+                    enabled -> "可以执行"
+                    else -> "Quicker 未连接"
+                }
+            },
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
-        Row(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, top = 14.dp, bottom = 14.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .fillMaxSize()
+                .padding(start = 5.dp, top = 8.dp, end = 5.dp, bottom = 3.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Box(
-                modifier = Modifier.size(40.dp),
+                modifier = Modifier.size(44.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 if (running) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.5.dp)
                 } else {
-                    Icon(
-                        Icons.Outlined.PlayArrow,
-                        contentDescription = "执行",
-                        tint = if (enabled) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
+                    SavedActionArtwork(action = action, enabled = enabled)
                 }
             }
-            Spacer(Modifier.width(8.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    action.label,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    details,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Box {
-                IconButton(onClick = { menuExpanded = true }) {
-                    Icon(Icons.Outlined.MoreVert, contentDescription = "${action.label}的更多选项")
-                }
-                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                    DropdownMenuItem(
-                        text = { Text("编辑") },
-                        leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
-                        onClick = {
-                            menuExpanded = false
-                            onEdit()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("删除") },
-                        leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
-                        onClick = {
-                            menuExpanded = false
-                            onDelete()
-                        },
-                    )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                action.label,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(labelHeight),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box {
+                    IconButton(
+                        onClick = { menuExpanded = true },
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.MoreVert,
+                            contentDescription = "${action.label}的更多选项",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                        DropdownMenuItem(
+                            text = { Text("编辑") },
+                            leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onEdit()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("删除") },
+                            leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onDelete()
+                            },
+                        )
+                    }
                 }
             }
         }
     }
 }
+
+@Composable
+private fun SavedActionArtwork(action: SavedAction, enabled: Boolean) {
+    val icon = action.icon
+    val encodedPng = icon
+        ?.takeIf { it.startsWith(PNG_ICON_PREFIX) }
+        ?.removePrefix(PNG_ICON_PREFIX)
+    val decodedBitmap by produceState<Bitmap?>(initialValue = null, key1 = encodedPng) {
+        value = encodedPng?.let { encoded ->
+            withContext(Dispatchers.Default) { decodeActionIcon(encoded) }
+        }
+    }
+    var networkLoaded by remember(icon) { mutableStateOf(false) }
+    val tint = if (enabled) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        when {
+            decodedBitmap != null -> Image(
+                bitmap = requireNotNull(decodedBitmap).asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier.size(40.dp),
+                contentScale = ContentScale.Fit,
+            )
+
+            icon?.startsWith(QUICKER_ICON_URL_PREFIX) == true -> {
+                if (!networkLoaded) {
+                    ActionIconPlaceholder(action.label, tint)
+                }
+                AsyncImage(
+                    model = icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp),
+                    contentScale = ContentScale.Fit,
+                    onLoading = { networkLoaded = false },
+                    onSuccess = { networkLoaded = true },
+                    onError = { networkLoaded = false },
+                )
+            }
+
+            else -> ActionIconPlaceholder(action.label, tint)
+        }
+    }
+}
+
+@Composable
+private fun ActionIconPlaceholder(label: String, tint: androidx.compose.ui.graphics.Color) {
+    Surface(
+        modifier = Modifier.size(40.dp),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                label.trim().take(1).uppercase(),
+                style = MaterialTheme.typography.titleMedium,
+                color = tint,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+private fun decodeActionIcon(encoded: String): Bitmap? {
+    val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull() ?: return null
+    if (bytes.size !in 33..16_384) return null
+
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (
+        bounds.outWidth !in 1..512 ||
+        bounds.outHeight !in 1..512 ||
+        bounds.outWidth.toLong() * bounds.outHeight > 262_144L
+    ) {
+        return null
+    }
+
+    var sampleSize = 1
+    while (bounds.outWidth / sampleSize > 128 || bounds.outHeight / sampleSize > 128) {
+        sampleSize *= 2
+    }
+    val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+}
+
+private const val PNG_ICON_PREFIX = "data:image/png;base64,"
+private const val QUICKER_ICON_URL_PREFIX = "https://files.getquicker.net/"
 
 @Composable
 private fun ConnectionScreen(
@@ -1363,6 +1486,7 @@ private fun ActionEditorDialog(
                             quickerActionId = action?.quickerActionId,
                             sourceGroup = action?.sourceGroup,
                             sourceScene = action?.sourceScene,
+                            icon = action?.icon,
                         ),
                     )
                 },

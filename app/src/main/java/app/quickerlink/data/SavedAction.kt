@@ -11,6 +11,7 @@ data class SavedAction(
     val quickerActionId: String? = null,
     val sourceGroup: String? = null,
     val sourceScene: String? = null,
+    val icon: String? = null,
 )
 
 data class StoredConnection(

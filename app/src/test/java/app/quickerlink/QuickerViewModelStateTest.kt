@@ -114,7 +114,7 @@ class QuickerViewModelStateTest {
         val catalog = panelCatalog(
             globalGroups = listOf("常用"),
             globalActions = listOf(
-                QuickerPanelAction(FIRST_ACTION_ID, "动作一", "常用", 2),
+                QuickerPanelAction(FIRST_ACTION_ID, "动作一", "常用", 2, ICON_URL),
                 QuickerPanelAction(SECOND_ACTION_ID, "动作二", null, 7),
             ),
             commonGroups = listOf("默认"),
@@ -130,6 +130,7 @@ class QuickerViewModelStateTest {
             merged.map(SavedAction::quickerActionId),
         )
         assertEquals(listOf("常用", null, "默认"), merged.map(SavedAction::sourceGroup))
+        assertEquals(listOf(ICON_URL, null, null), merged.map(SavedAction::icon))
         assertEquals(
             listOf(
                 QuickerPanelActionsProtocol.GLOBAL_SCENE,
@@ -159,6 +160,7 @@ class QuickerViewModelStateTest {
                 quickerActionId = FIRST_ACTION_ID.uppercase(),
                 sourceGroup = "旧分组",
                 sourceScene = null,
+                icon = "https://files.getquicker.net/_icons/OLD.png",
             ),
             SavedAction(
                 id = "synced-removed-common",
@@ -178,7 +180,7 @@ class QuickerViewModelStateTest {
         )
         val catalog = panelCatalog(
             globalGroups = listOf("新分组"),
-            globalActions = listOf(QuickerPanelAction(FIRST_ACTION_ID, "新名称", "新分组", 4)),
+            globalActions = listOf(QuickerPanelAction(FIRST_ACTION_ID, "新名称", "新分组", 4, ICON_URL)),
         )
 
         val merged = mergePanelActions(existing, catalog)
@@ -189,6 +191,7 @@ class QuickerViewModelStateTest {
         assertEquals("保留参数", merged.first().parameter)
         assertTrue(merged.first().confirmBeforeRun)
         assertEquals(QuickerPanelActionsProtocol.GLOBAL_SCENE, merged.first().sourceScene)
+        assertEquals(ICON_URL, merged.first().icon)
         assertEquals(manual, merged.last())
     }
 
@@ -287,5 +290,6 @@ class QuickerViewModelStateTest {
         const val FIRST_ACTION_ID = "11111111-1111-4111-8111-111111111111"
         const val SECOND_ACTION_ID = "22222222-2222-4222-8222-222222222222"
         const val THIRD_ACTION_ID = "33333333-3333-4333-8333-333333333333"
+        const val ICON_URL = "https://files.getquicker.net/_icons/NEW.png"
     }
 }

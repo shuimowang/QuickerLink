@@ -15,7 +15,7 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 Web
 - 扫描 Quicker Link 专用配对二维码
 - 运行配套 Quicker 动作，自动读取当前 WSS 设置并离线生成配对二维码
 - 扫码连接后自动同步 Quicker 新面板中的全局与通用动作、分组与顺序
-- 按 Quicker 分组浏览并搜索动作名称、分组或 ID
+- 以每行 4 至 6 个的高密度图标网格浏览动作，并按 Quicker 分组搜索名称、分组或 ID
 - 连接验证码认证，异常断线自动重连
 - 保存、编辑、删除动作快捷项
 - 通过动作名称或 ID 执行动作，并传入文本参数
@@ -37,7 +37,7 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 Web
 
 开启 WebSocket 服务和安全连接 `WSS`，记录端口与连接验证码，并确认 Windows 防火墙允许 Quicker 使用该端口。
 
-先在 Quicker 中导入 [`QuickerLinkPairing.action2.json`](quicker/QuickerLinkPairing.action2.json)。配套的 `Quicker Link` 动作只读取这些设置，不会替你修改端口或重新生成验证码；可审计源码位于 [`quicker`](quicker) 目录。
+先从 Quicker 动作库安装配套的 [`Quicker Link`](https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba) 动作。它只读取这些设置，不会替你修改端口或重新生成验证码。Android 客户端源码完整保留在本仓库；配套 Quicker 动作独立发布，其维护源码不随本仓库分发。
 
 ### 2. 连接手机
 
@@ -47,7 +47,7 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 Web
 
 ### 3. 同步与添加动作
 
-扫码连接成功后，App 会通过配套动作读取 Quicker 新面板中的全局与通用动作，只同步动作 ID、名称、来源、分组和面板顺序；不会读取动作源码、动作内部参数或具体应用场景动作。配对动作本身不会出现在同步结果中。以后可以在“动作”页面点击“刷新面板动作”手动更新。
+扫码连接成功后，App 会通过配套动作读取 Quicker 新面板中的全局与通用动作，只同步动作 ID、名称、图标、来源、分组和面板顺序；不会读取动作源码、动作内部参数或具体应用场景动作。配对动作本身不会出现在同步结果中。以后可以在“动作”页面点击“刷新面板动作”手动更新。
 
 再次同步会更新重命名、来源和分组变化，并移除已经不在全局与通用新面板中的同步项。同步项的名称和目标由 Quicker 管理，手机端仍可单独设置传入参数和“执行前确认”。原有手工快捷项会保留；动作页支持按名称、分组或动作 ID 搜索。
 
@@ -59,18 +59,18 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 Web
 
 ## 安装预览版
 
-`v0.2.0-alpha.2` 是使用项目专用 Release 密钥签名的早期 prerelease APK，用于测试，不代表已达到稳定生产版质量。GitHub Release 不会发布调试签名或未签名 APK。
+`v0.2.0-alpha.3` 是使用项目专用 Release 密钥签名的早期 prerelease APK，用于测试，不代表已达到稳定生产版质量。GitHub Release 不会发布调试签名或未签名 APK。
 
-如需试用，请从 [Releases](https://github.com/shuimowang/QuickerLink/releases) 同时下载 `quicker-link-v0.2.0-alpha.2-release.apk` 和同名 `.sha256` 文件。首次安装时，Android 可能要求允许安装来自浏览器或文件管理器的应用。
+如需试用，请从 [Releases](https://github.com/shuimowang/QuickerLink/releases) 同时下载 `quicker-link-v0.2.0-alpha.3-release.apk` 和同名 `.sha256` 文件。首次安装时，Android 可能要求允许安装来自浏览器或文件管理器的应用。
 
 安装前计算下载文件的 SHA-256，并与 `.sha256` 文件中的 64 位十六进制值逐字符比较：
 
 ```powershell
-(Get-FileHash -Algorithm SHA256 -LiteralPath ".\quicker-link-v0.2.0-alpha.2-release.apk").Hash.ToLowerInvariant()
+(Get-FileHash -Algorithm SHA256 -LiteralPath ".\quicker-link-v0.2.0-alpha.3-release.apk").Hash.ToLowerInvariant()
 ```
 
 ```bash
-sha256sum --check quicker-link-v0.2.0-alpha.2-release.apk.sha256
+sha256sum --check quicker-link-v0.2.0-alpha.3-release.apk.sha256
 ```
 
 校验和只能确认下载内容与发布的字节一致；请仍然仅从项目的 GitHub Release 页获取首个可信版本。
@@ -84,6 +84,7 @@ sha256sum --check quicker-link-v0.2.0-alpha.2-release.apk.sha256
 - 自动发现带有候选、并发和超时上限；探测阶段不发送验证码，结果不明确时要求改用扫码或手动地址。
 - 专用配对二维码包含连接验证码，应按凭据保护，不要截图或分享。
 - 配套 Quicker 动作不联网、不写文件，只在本机生成配对信息，并按需返回全局与通用动作的显示目录。
+- 动作图标只接受 Quicker 本地渲染的 PNG 数据或 `files.getquicker.net` 的受限 HTTPS 图片地址；App 不加载动作提供的任意第三方图标域名。
 - “只同步全局与通用动作”限制的是 App 获取和展示的目录，不是 Quicker WebSocket 的权限边界；已认证客户端若已知其他动作 ID，Quicker 本身仍可能允许执行。
 - 本项目不会禁用 TLS 证书或主机名校验。
 - 请勿将 Quicker WebSocket 端口直接暴露到公网。
@@ -116,6 +117,6 @@ app/build/outputs/apk/debug/app-debug.apk
 
 欢迎阅读 [贡献指南](CONTRIBUTING.md) 并提交 Issue 或 Pull Request。
 
-## License
+## 开源边界与许可证
 
-[MIT](LICENSE)
+本仓库中的 Android 客户端、测试、构建流程和公开文档采用 [MIT](LICENSE) 许可证，便于独立审计 App 的网络、存储和执行行为。通过 Quicker 动作库独立发布的配套动作不属于本仓库，也不在本仓库的 MIT 授权范围内。

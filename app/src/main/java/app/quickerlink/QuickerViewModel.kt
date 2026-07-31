@@ -66,7 +66,7 @@ data class QuickerUiState(
     val localNetworkPermissionGranted: Boolean = true,
     val localNetworkPermissionPermanentlyDenied: Boolean = false,
     val savedActions: List<SavedAction> = emptyList(),
-    val catalogActionId: String = QuickerPanelActionsProtocol.COMPANION_ACTION_ID,
+    val catalogActionId: String = QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
     val syncingPanelActions: Boolean = false,
     val runningActionIds: Set<String> = emptySet(),
     val logs: List<EventLog> = emptyList(),
@@ -191,6 +191,7 @@ internal fun mergePanelActions(
                 quickerActionId = remote.id,
                 sourceGroup = remote.group,
                 sourceScene = scene.scene,
+                icon = remote.icon,
             )
         }
     }
@@ -225,7 +226,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             rememberPassword = knownGoodConnection.rememberPassword,
             savedActions = preferences.loadActions(),
             catalogActionId = knownGoodConnection.serviceActionId
-                ?: QuickerPanelActionsProtocol.COMPANION_ACTION_ID,
+                ?: QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
         ),
     )
     val uiState: StateFlow<QuickerUiState> = mutableUiState.asStateFlow()
@@ -437,7 +438,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 port = pairing.port.toString(),
                 password = pairing.password,
                 catalogActionId = pairing.serviceActionId
-                    ?: QuickerPanelActionsProtocol.COMPANION_ACTION_ID,
+                    ?: QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
                 discoveryState = QuickerDiscoveryState.Idle,
                 connectionError = null,
             )
@@ -447,7 +448,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             config = QuickerConnectionConfig(pairing.ipAddress, pairing.port, pairing.password),
             rememberPassword = state.rememberPassword,
             serviceActionId = pairing.serviceActionId
-                ?: QuickerPanelActionsProtocol.COMPANION_ACTION_ID,
+                ?: QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
         )
     }
 
