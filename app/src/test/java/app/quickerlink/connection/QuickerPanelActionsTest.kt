@@ -1,5 +1,6 @@
 package app.quickerlink.connection
 
+import app.quickerlink.data.ActionParameterChoice
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
 import org.junit.Assert.assertEquals
@@ -10,8 +11,8 @@ import java.util.Base64
 
 class QuickerPanelActionsTest {
     @Test
-    fun usesStrictV3PanelActionCommand() {
-        assertEquals("quickerlink:list-panel-actions:v3", QuickerPanelActionsProtocol.LIST_COMMAND)
+    fun usesStrictV4PanelActionCommand() {
+        assertEquals("quickerlink:list-panel-actions:v4", QuickerPanelActionsProtocol.LIST_COMMAND)
         assertEquals(
             "b02b2732-f087-4e45-416d-08deee3e76ba",
             QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
@@ -23,7 +24,7 @@ class QuickerPanelActionsTest {
         val catalog = parse(
             commonGroups = """["默认"]""",
             commonActions = """
-                [{"id":"$SECOND_ID","title":"通用动作","group":"默认","order":3,"icon":null}]
+                [{"id":"$SECOND_ID","title":"通用动作","group":"默认","order":3,"icon":null,"parameterChoices":[]}]
             """.trimIndent(),
         )
 
@@ -37,10 +38,11 @@ class QuickerPanelActionsTest {
         assertEquals("常用", catalog.scenes.first().actions.single().group)
         assertEquals(0, catalog.scenes.first().actions.single().order)
         assertEquals(QUICKER_ICON, catalog.scenes.first().actions.single().icon)
+        assertEquals(emptyList<ActionParameterChoice>(), catalog.scenes.first().actions.single().parameterChoices)
     }
 
     @Test
-    fun parsesV3CatalogReturnedAsObject() {
+    fun parsesV4CatalogReturnedAsObject() {
         val data = JsonParser.parseString(successCatalog()).asJsonObject
 
         val catalog = QuickerPanelActionsProtocol.parse(data)
@@ -50,13 +52,67 @@ class QuickerPanelActionsTest {
     }
 
     @Test
+    fun parsesOrderedContextMenuParameterChoices() {
+        val catalog = parse(
+            globalActions = """
+                [{
+                  "id":"$FIRST_ID",
+                  "title":"录制工具",
+                  "group":"常用",
+                  "order":0,
+                  "icon":null,
+                  "parameterChoices":[
+                    {"label":"设置","value":"action_settings"},
+                    {"label":"录制","value":"action_ffmpeg"}
+                  ]
+                }]
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            listOf(
+                ActionParameterChoice("设置", "action_settings"),
+                ActionParameterChoice("录制", "action_ffmpeg"),
+            ),
+            catalog.actions.single().parameterChoices,
+        )
+    }
+
+    @Test
+    fun rejectsMissingMalformedOrUnboundedParameterChoices() {
+        val base = """{"id":"$FIRST_ID","title":"动作","group":"常用","order":0,"icon":null"""
+        val tooManyChoices = List(51) { index ->
+            """{"label":"选项$index","value":"value_$index"}"""
+        }.joinToString(",")
+        val malformedActions = listOf(
+            "$base}",
+            "$base,\"parameterChoices\":null}",
+            "$base,\"parameterChoices\":{}}",
+            "$base,\"parameterChoices\":[false]}",
+            "$base,\"parameterChoices\":[{\"label\":\"设置\"}]}",
+            "$base,\"parameterChoices\":[{\"label\":\"设置\",\"value\":\"action_settings\",\"extra\":true}]}",
+            "$base,\"parameterChoices\":[{\"label\":\"\",\"value\":\"action_settings\"}]}",
+            "$base,\"parameterChoices\":[{\"label\":\"设置\",\"value\":\"\"}]}",
+            "$base,\"parameterChoices\":[{\"label\":\"${"x".repeat(121)}\",\"value\":\"value\"}]}",
+            "$base,\"parameterChoices\":[{\"label\":\"设置\",\"value\":\"${"x".repeat(2_049)}\"}]}",
+            "$base,\"parameterChoices\":[$tooManyChoices]}",
+        )
+
+        malformedActions.forEach { action ->
+            assertThrows(IllegalArgumentException::class.java) {
+                parse(globalActions = "[$action]")
+            }
+        }
+    }
+
+    @Test
     fun acceptsEmptyCommonSceneAndUngroupedNonContiguousActions() {
         val catalog = parse(
             globalGroups = "[]",
             globalActions = """
                 [
-                  {"id":"$FIRST_ID","title":"动作一","group":null,"order":2,"icon":null},
-                  {"id":"$SECOND_ID","title":"动作二","group":null,"order":7,"icon":null}
+                  {"id":"$FIRST_ID","title":"动作一","group":null,"order":2,"icon":null,"parameterChoices":[]},
+                  {"id":"$SECOND_ID","title":"动作二","group":null,"order":7,"icon":null,"parameterChoices":[]}
                 ]
             """.trimIndent(),
             commonGroups = "[]",
@@ -84,8 +140,25 @@ class QuickerPanelActionsTest {
         assertThrows(IllegalArgumentException::class.java) {
             QuickerPanelActionsProtocol.parse(JsonPrimitive(legacy))
         }
-        assertThrows(IllegalArgumentException::class.java) {
-            QuickerPanelActionsProtocol.parse(JsonPrimitive(successCatalog().replace("\"version\":3", "\"version\":2")))
+        assertThrows(UnsupportedPanelCatalogVersionException::class.java) {
+            QuickerPanelActionsProtocol.parse(JsonPrimitive(successCatalog().replace("\"version\":4", "\"version\":3")))
+        }
+    }
+
+    @Test
+    fun identifiesOldCompanionUnsupportedCommandResponseAsVersionMismatch() {
+        val oldCompanionResponse = """
+            {
+              "protocol":"quickerlink.panel-actions",
+              "version":3,
+              "ok":false,
+              "code":"unsupported_command",
+              "error":"不支持的命令"
+            }
+        """.trimIndent()
+
+        assertThrows(UnsupportedPanelCatalogVersionException::class.java) {
+            QuickerPanelActionsProtocol.parse(JsonPrimitive(oldCompanionResponse))
         }
     }
 
@@ -95,8 +168,8 @@ class QuickerPanelActionsTest {
         val catalog = parse(
             globalActions = """
                 [
-                  {"id":"$FIRST_ID","title":"网络图标","group":"常用","order":0,"icon":"$QUICKER_ICON"},
-                  {"id":"$SECOND_ID","title":"字体图标","group":"常用","order":1,"icon":"$dataIcon"}
+                  {"id":"$FIRST_ID","title":"网络图标","group":"常用","order":0,"icon":"$QUICKER_ICON","parameterChoices":[]},
+                  {"id":"$SECOND_ID","title":"字体图标","group":"常用","order":1,"icon":"$dataIcon","parameterChoices":[]}
                 ]
             """.trimIndent(),
         )
@@ -127,7 +200,7 @@ class QuickerPanelActionsTest {
             assertThrows(IllegalArgumentException::class.java) {
                 parse(
                     globalActions =
-                        """[{"id":"$FIRST_ID","title":"动作","group":"常用","order":0,"icon":"$icon"}]""",
+                        """[{"id":"$FIRST_ID","title":"动作","group":"常用","order":0,"icon":"$icon","parameterChoices":[]}]""",
                 )
             }
         }
@@ -162,7 +235,7 @@ class QuickerPanelActionsTest {
         val extraAction = successCatalog(
             scenes = validScenes(
                 globalActions = """
-                    [{"id":"$FIRST_ID","title":"动作","group":"常用","order":0,"icon":null,"unexpected":true}]
+                    [{"id":"$FIRST_ID","title":"动作","group":"常用","order":0,"icon":null,"parameterChoices":[],"unexpected":true}]
                 """.trimIndent(),
             ),
         )
@@ -179,12 +252,12 @@ class QuickerPanelActionsTest {
         val duplicateId = FIRST_ID.uppercase()
         val duplicateWithinScene = """
             [
-              {"id":"$FIRST_ID","title":"动作一","group":"常用","order":0,"icon":null},
-              {"id":"$duplicateId","title":"动作二","group":"常用","order":1,"icon":null}
+              {"id":"$FIRST_ID","title":"动作一","group":"常用","order":0,"icon":null,"parameterChoices":[]},
+              {"id":"$duplicateId","title":"动作二","group":"常用","order":1,"icon":null,"parameterChoices":[]}
             ]
         """.trimIndent()
         val duplicateAcrossScenes = """
-            [{"id":"$duplicateId","title":"重复动作","group":"默认","order":0,"icon":null}]
+            [{"id":"$duplicateId","title":"重复动作","group":"默认","order":0,"icon":null,"parameterChoices":[]}]
         """.trimIndent()
 
         assertThrows(IllegalArgumentException::class.java) {
@@ -198,12 +271,12 @@ class QuickerPanelActionsTest {
     @Test
     fun rejectsInvalidActionIdsAndUnknownGroups() {
         assertThrows(IllegalArgumentException::class.java) {
-            parse(globalActions = """[{"id":"not-a-guid","title":"动作一","group":"常用","order":0,"icon":null}]""")
+            parse(globalActions = """[{"id":"not-a-guid","title":"动作一","group":"常用","order":0,"icon":null,"parameterChoices":[]}]""")
         }
         assertThrows(IllegalArgumentException::class.java) {
             parse(
                 globalActions = """
-                    [{"id":"$FIRST_ID","title":"动作一","group":"不存在","order":0,"icon":null}]
+                    [{"id":"$FIRST_ID","title":"动作一","group":"不存在","order":0,"icon":null,"parameterChoices":[]}]
                 """.trimIndent(),
             )
         }
@@ -214,17 +287,17 @@ class QuickerPanelActionsTest {
         val invalidActions = listOf(
             """
                 [
-                  {"id":"$FIRST_ID","title":"动作一","group":"常用","order":3,"icon":null},
-                  {"id":"$SECOND_ID","title":"动作二","group":"常用","order":3,"icon":null}
+                  {"id":"$FIRST_ID","title":"动作一","group":"常用","order":3,"icon":null,"parameterChoices":[]},
+                  {"id":"$SECOND_ID","title":"动作二","group":"常用","order":3,"icon":null,"parameterChoices":[]}
                 ]
             """.trimIndent(),
             """
                 [
-                  {"id":"$FIRST_ID","title":"动作一","group":"常用","order":3,"icon":null},
-                  {"id":"$SECOND_ID","title":"动作二","group":"常用","order":2,"icon":null}
+                  {"id":"$FIRST_ID","title":"动作一","group":"常用","order":3,"icon":null,"parameterChoices":[]},
+                  {"id":"$SECOND_ID","title":"动作二","group":"常用","order":2,"icon":null,"parameterChoices":[]}
                 ]
             """.trimIndent(),
-            """[{"id":"$FIRST_ID","title":"动作一","group":"常用","order":-1,"icon":null}]""",
+            """[{"id":"$FIRST_ID","title":"动作一","group":"常用","order":-1,"icon":null,"parameterChoices":[]}]""",
         )
 
         invalidActions.forEach { actions ->
@@ -242,14 +315,14 @@ class QuickerPanelActionsTest {
     }
 
     @Test
-    fun surfacesStableCodeAndMessageFromV3ServerError() {
+    fun surfacesStableCodeAndMessageFromV4ServerError() {
         val error = assertThrows(IllegalArgumentException::class.java) {
             QuickerPanelActionsProtocol.parse(
                 JsonPrimitive(
                     """
                         {
                           "protocol":"quickerlink.panel-actions",
-                          "version":3,
+                          "version":4,
                           "ok":false,
                           "code":"catalog_read_failed",
                           "error":"读取 Quicker 动作目录失败。"
@@ -265,13 +338,13 @@ class QuickerPanelActionsTest {
     @Test
     fun rejectsMalformedOrExtendedServerErrorEnvelopes() {
         listOf(
-            """{"protocol":"quickerlink.panel-actions","version":3,"ok":false,"code":"bad code","error":"失败"}""",
-            """{"protocol":"quickerlink.panel-actions","version":3,"ok":false,"code":"failed","error":""}""",
-            """{"protocol":"quickerlink.panel-actions","version":3,"ok":"false","code":"failed","error":"失败"}""",
-            """{"protocol":"quickerlink.panel-actions","version":3,"code":"failed","error":"失败"}""",
-            """{"protocol":"quickerlink.panel-actions","version":3,"ok":false,"code":7,"error":"失败"}""",
-            """{"protocol":"quickerlink.panel-actions","version":3,"ok":false,"code":"failed","error":7}""",
-            """{"protocol":"quickerlink.panel-actions","version":3,"ok":false,"code":"failed","error":"失败","unexpected":true}""",
+            """{"protocol":"quickerlink.panel-actions","version":4,"ok":false,"code":"bad code","error":"失败"}""",
+            """{"protocol":"quickerlink.panel-actions","version":4,"ok":false,"code":"failed","error":""}""",
+            """{"protocol":"quickerlink.panel-actions","version":4,"ok":"false","code":"failed","error":"失败"}""",
+            """{"protocol":"quickerlink.panel-actions","version":4,"code":"failed","error":"失败"}""",
+            """{"protocol":"quickerlink.panel-actions","version":4,"ok":false,"code":7,"error":"失败"}""",
+            """{"protocol":"quickerlink.panel-actions","version":4,"ok":false,"code":"failed","error":7}""",
+            """{"protocol":"quickerlink.panel-actions","version":4,"ok":false,"code":"failed","error":"失败","unexpected":true}""",
         ).forEach { payload ->
             assertThrows(IllegalArgumentException::class.java) {
                 QuickerPanelActionsProtocol.parse(JsonPrimitive(payload))
@@ -289,17 +362,17 @@ class QuickerPanelActionsTest {
             successCatalog(validScenes(globalActions = "[false]")),
             successCatalog(
                 validScenes(
-                    globalActions = """[{"id":"$FIRST_ID","title":"动作一","order":0,"icon":null}]""",
+                    globalActions = """[{"id":"$FIRST_ID","title":"动作一","order":0,"icon":null,"parameterChoices":[]}]""",
                 ),
             ),
             successCatalog(
                 validScenes(
-                    globalActions = """[{"id":"$FIRST_ID","title":"动作一","group":7,"order":0,"icon":null}]""",
+                    globalActions = """[{"id":"$FIRST_ID","title":"动作一","group":7,"order":0,"icon":null,"parameterChoices":[]}]""",
                 ),
             ),
             successCatalog(
                 validScenes(
-                    globalActions = """[{"id":"$FIRST_ID","title":"动作一","group":"常用","order":0}]""",
+                    globalActions = """[{"id":"$FIRST_ID","title":"动作一","group":"常用","order":0,"parameterChoices":[]}]""",
                 ),
             ),
         )
@@ -330,7 +403,7 @@ class QuickerPanelActionsTest {
     ): String = """
         {
           "protocol":"quickerlink.panel-actions",
-          "version":3,
+          "version":4,
           "ok":true,
           "scenes":$scenes$extraRoot
         }
@@ -362,7 +435,7 @@ class QuickerPanelActionsTest {
     """.trimIndent()
 
     private fun defaultActions(): String = """
-        [{"id":"$FIRST_ID","title":"打开项目","group":"常用","order":0,"icon":"$QUICKER_ICON"}]
+        [{"id":"$FIRST_ID","title":"打开项目","group":"常用","order":0,"icon":"$QUICKER_ICON","parameterChoices":[]}]
     """.trimIndent()
 
     private fun pngWithDimensions(width: Int, height: Int): String {

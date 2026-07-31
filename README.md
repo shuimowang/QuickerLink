@@ -17,8 +17,9 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 Web
 - 扫码连接后自动同步 Quicker 新面板中的全局与通用动作、分组与顺序
 - 以每行 4 至 6 个的高密度图标网格浏览动作，并按 Quicker 分组搜索名称、分组或 ID
 - 连接验证码认证，异常断线自动重连
-- 保存、编辑、删除动作快捷项
+- 手工动作可编辑、删除；同步动作可设置参数和执行前确认
 - 通过动作名称或 ID 执行动作，并传入文本参数
+- 将 Quicker 动作右键菜单同步为可自由输入的参数快捷选项
 - 点击后只把动作派发给 Quicker，不等待持续运行类动作结束
 - 向电脑剪贴板复制文本，或粘贴到电脑当前窗口
 - 接收 Quicker 发来的 `copy` 消息并写入手机剪贴板
@@ -48,11 +49,11 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 Web
 
 ### 3. 同步与添加动作
 
-扫码连接成功后，App 会通过配套动作读取 Quicker 新面板中的全局与通用动作，只同步动作 ID、名称、图标、来源、分组和面板顺序；不会读取动作源码、动作内部参数或具体应用场景动作。配对动作本身不会出现在同步结果中。以后可以在“动作”页面点击“刷新面板动作”手动更新。
+扫码连接成功后，App 会通过配套动作读取 Quicker 新面板中的全局与通用动作，只同步动作 ID、名称、图标、来源、分组、面板顺序和动作右键菜单中的快捷参数；不会读取动作源码、动作内部变量或具体应用场景动作。配对动作本身不会出现在同步结果中。以后可以在“动作”页面点击“刷新面板动作”手动更新。
 
-再次同步会更新重命名、来源和分组变化，并移除已经不在全局与通用新面板中的同步项。同步项的名称和目标由 Quicker 管理，手机端仍可单独设置传入参数和“执行前确认”。原有手工快捷项会保留；动作页支持按名称、分组或动作 ID 搜索。
+再次同步会更新重命名、来源、分组和快捷参数变化，并移除已经不在全局与通用新面板中的同步项。同步项的名称、目标和快捷参数由 Quicker 管理，手机端仍可自由输入当前参数、从快捷选项中选择参数，并设置“执行前确认”。同步项不提供单独删除；请在 Quicker 面板中移除后刷新。原有手工快捷项会保留；动作页支持按名称、分组或动作 ID 搜索。
 
-如果电脑尚未安装配套动作、动作版本过旧或目录请求失败，App 会显示“打开动作网页”入口，由用户前往 Quicker 动作网页完成安装或更新。
+如果电脑尚未安装配套动作或动作版本过旧，App 会显示“打开动作网页”入口，由用户前往 Quicker 动作网页完成安装或更新；其他同步失败会保留实际错误信息供排查。
 
 也可以点击“添加动作”继续创建手工快捷项，填写 Quicker 动作名称或 ID。动作参数会作为 Quicker 的内置字符串参数传入，组合动作中可通过 `{quicker_in_param}` 使用。
 
@@ -62,18 +63,18 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 Web
 
 ## 安装预览版
 
-`v0.2.0-alpha.4` 是使用项目专用 Release 密钥签名的早期 prerelease APK，用于测试，不代表已达到稳定生产版质量。GitHub Release 不会发布调试签名或未签名 APK。
+`v0.2.0-alpha.5` 是使用项目专用 Release 密钥签名的早期 prerelease APK，用于测试，不代表已达到稳定生产版质量。GitHub Release 不会发布调试签名或未签名 APK。
 
-如需首次安装，请从 [Releases](https://github.com/shuimowang/QuickerLink/releases) 同时下载 `quicker-link-v0.2.0-alpha.4-release.apk` 和同名 `.sha256` 文件。首次安装时，Android 可能要求允许安装来自浏览器或文件管理器的应用。
+如需首次安装，请从 [Releases](https://github.com/shuimowang/QuickerLink/releases) 同时下载 `quicker-link-v0.2.0-alpha.5-release.apk` 和同名 `.sha256` 文件。首次安装时，Android 可能要求允许安装来自浏览器或文件管理器的应用。
 
 安装前计算下载文件的 SHA-256，并与 `.sha256` 文件中的 64 位十六进制值逐字符比较：
 
 ```powershell
-(Get-FileHash -Algorithm SHA256 -LiteralPath ".\quicker-link-v0.2.0-alpha.4-release.apk").Hash.ToLowerInvariant()
+(Get-FileHash -Algorithm SHA256 -LiteralPath ".\quicker-link-v0.2.0-alpha.5-release.apk").Hash.ToLowerInvariant()
 ```
 
 ```bash
-sha256sum --check quicker-link-v0.2.0-alpha.4-release.apk.sha256
+sha256sum --check quicker-link-v0.2.0-alpha.5-release.apk.sha256
 ```
 
 校验和只能确认下载内容与发布的字节一致；请仍然仅从项目的 GitHub Release 页获取首个可信版本。

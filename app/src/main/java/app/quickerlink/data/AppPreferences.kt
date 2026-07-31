@@ -110,10 +110,7 @@ class AppPreferences(context: Context) : QuickerPreferences {
 
     override fun loadActions(): List<SavedAction> {
         val json = preferences.getString(KEY_ACTIONS, null) ?: return emptyList()
-        return runCatching {
-            val type = object : TypeToken<List<SavedAction>>() {}.type
-            gson.fromJson<List<SavedAction>>(json, type).orEmpty()
-        }.getOrDefault(emptyList())
+        return decodeSavedActions(json, gson)
     }
 
     override fun saveActions(actions: List<SavedAction>) {
@@ -175,3 +172,14 @@ class AppPreferences(context: Context) : QuickerPreferences {
         const val TRANSFORMATION = "AES/GCM/NoPadding"
     }
 }
+
+internal fun decodeSavedActions(
+    json: String,
+    gson: Gson = Gson(),
+): List<SavedAction> = runCatching {
+    val type = object : TypeToken<List<SavedAction>>() {}.type
+    gson.fromJson<List<SavedAction>>(json, type).orEmpty().map { action ->
+        // Gson bypasses Kotlin default arguments, so an older stored object yields null here.
+        action.copy(parameterChoices = action.parameterChoices.orEmpty())
+    }
+}.getOrDefault(emptyList())

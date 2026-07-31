@@ -20,6 +20,7 @@ import app.quickerlink.connection.QuickerPairingCode
 import app.quickerlink.connection.QuickerProtocol
 import app.quickerlink.connection.QuickerPanelActionCatalog
 import app.quickerlink.connection.QuickerPanelActionsProtocol
+import app.quickerlink.connection.UnsupportedPanelCatalogVersionException
 import app.quickerlink.connection.QuickerWebSocketEndpointProbe
 import app.quickerlink.data.AppPreferences
 import app.quickerlink.data.PreferenceWriteResult
@@ -165,6 +166,59 @@ internal fun QuickerUiState.startRunningAction(actionId: String): QuickerUiState
 internal fun QuickerUiState.finishRunningAction(actionId: String): QuickerUiState =
     copy(runningActionIds = runningActionIds - actionId)
 
+internal fun applyActionEdit(existing: SavedAction?, edited: SavedAction): SavedAction =
+    if (existing?.quickerActionId != null) {
+        existing.copy(
+            parameter = edited.parameter,
+            confirmBeforeRun = edited.confirmBeforeRun,
+        )
+    } else {
+        edited
+    }
+
+internal fun applyActionSave(
+    existing: List<SavedAction>,
+    edited: SavedAction,
+): List<SavedAction> {
+    val existingIndex = existing.indexOfFirst { it.id == edited.id }
+    if (existingIndex < 0) {
+        return if (edited.quickerActionId == null) existing + edited else existing
+    }
+    val saved = applyActionEdit(existing[existingIndex], edited)
+    return existing.toMutableList().apply { set(existingIndex, saved) }
+}
+
+internal fun removeManualAction(
+    existing: List<SavedAction>,
+    actionId: String,
+): List<SavedAction>? {
+    val stored = existing.firstOrNull { it.id == actionId } ?: return existing
+    if (stored.quickerActionId != null) return null
+    return existing.filterNot { it.id == actionId }
+}
+
+internal class CompanionActionUnavailableException(message: String) : IllegalStateException(message)
+
+internal data class PanelSyncFailure(
+    val message: String,
+    val showCompanionActionPrompt: Boolean,
+)
+
+internal fun classifyPanelSyncFailure(error: Exception): PanelSyncFailure = when (error) {
+    is UnsupportedPanelCatalogVersionException -> PanelSyncFailure(
+        message = "Quicker Link 动作版本过旧，请更新后重试",
+        showCompanionActionPrompt = true,
+    )
+    is CompanionActionUnavailableException -> PanelSyncFailure(
+        message = "未找到可用的 Quicker Link 动作，请先安装或更新",
+        showCompanionActionPrompt = true,
+    )
+    else -> PanelSyncFailure(
+        message = error.message ?: "同步动作失败",
+        showCompanionActionPrompt = false,
+    )
+}
+
 internal fun mergePanelActions(
     existing: List<SavedAction>,
     catalog: QuickerPanelActionCatalog,
@@ -200,6 +254,7 @@ internal fun mergePanelActions(
                 label = remote.title,
                 actionTarget = remote.id,
                 parameter = previous?.parameter.orEmpty(),
+                parameterChoices = remote.parameterChoices,
                 confirmBeforeRun = previous?.confirmBeforeRun ?: false,
                 quickerActionId = remote.id,
                 sourceGroup = remote.group,
@@ -485,22 +540,28 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         require(action.actionTarget.isNotBlank()) { "动作名称或 ID 不能为空" }
 
         mutableUiState.update { state ->
-            val existingIndex = state.savedActions.indexOfFirst { it.id == action.id }
-            val updated = if (existingIndex >= 0) {
-                state.savedActions.toMutableList().apply { set(existingIndex, action) }
-            } else {
-                state.savedActions + action
-            }
+            val updated = applyActionSave(state.savedActions, action)
+            if (updated == state.savedActions) return@update state
             preferences.saveActions(updated)
             state.copy(savedActions = updated)
         }
     }
 
     fun deleteAction(action: SavedAction) {
+        var synchronizedAction = false
         mutableUiState.update { state ->
-            val updated = state.savedActions.filterNot { it.id == action.id }
+            val updated = removeManualAction(state.savedActions, action.id)
+            if (updated == null) {
+                synchronizedAction = true
+                return@update state
+            }
+            synchronizedAction = false
+            if (updated == state.savedActions) return@update state
             preferences.saveActions(updated)
             state.copy(savedActions = updated)
+        }
+        if (synchronizedAction) {
+            mutableNotices.tryEmit(UiNotice.Error("同步动作由 Quicker 管理，不能单独删除"))
         }
     }
 
@@ -521,7 +582,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     data = QuickerPanelActionsProtocol.LIST_COMMAND,
                 )
                 if (response.isSuccess == false) {
-                    throw IllegalStateException(
+                    throw CompanionActionUnavailableException(
                         response.message
                             ?: QuickerProtocol.displayData(response.data)
                             ?: "Quicker 拒绝读取动作目录",
@@ -542,8 +603,11 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
-                mutableUiState.update { it.copy(companionActionPromptVisible = true) }
-                mutableNotices.emit(UiNotice.Error(error.message ?: "同步动作失败"))
+                val failure = classifyPanelSyncFailure(error)
+                mutableUiState.update {
+                    it.copy(companionActionPromptVisible = failure.showCompanionActionPrompt)
+                }
+                mutableNotices.emit(UiNotice.Error(failure.message))
             } finally {
                 mutableUiState.update { it.copy(syncingPanelActions = false) }
             }

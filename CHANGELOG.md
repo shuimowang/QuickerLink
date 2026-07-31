@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.2.0-alpha.5] - 2026-07-31
+
+### Added
+
+- Synchronize Quicker action context-menu values as labeled parameter choices while retaining free-form parameter input
+
+### Changed
+
+- Limit synchronized actions to local run settings; names, targets, parameter choices, and removal continue to follow Quicker
+- Prevent stale editors or delete requests from restoring or removing Quicker-managed synchronized actions
+- Upgrade the strict global/common action catalog contract to v4
+- Distinguish a missing or outdated companion action from ordinary synchronization failures
+
 ## [0.2.0-alpha.4] - 2026-07-31
 
 ### Added

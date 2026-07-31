@@ -2,11 +2,17 @@ package app.quickerlink.data
 
 import java.util.UUID
 
+data class ActionParameterChoice(
+    val label: String,
+    val value: String,
+)
+
 data class SavedAction(
     val id: String = UUID.randomUUID().toString(),
     val label: String,
     val actionTarget: String,
     val parameter: String = "",
+    val parameterChoices: List<ActionParameterChoice> = emptyList(),
     val confirmBeforeRun: Boolean = false,
     val quickerActionId: String? = null,
     val sourceGroup: String? = null,

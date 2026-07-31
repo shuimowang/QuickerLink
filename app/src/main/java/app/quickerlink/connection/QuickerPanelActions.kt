@@ -1,5 +1,6 @@
 package app.quickerlink.connection
 
+import app.quickerlink.data.ActionParameterChoice
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -12,6 +13,7 @@ data class QuickerPanelAction(
     val group: String?,
     val order: Int,
     val icon: String? = null,
+    val parameterChoices: List<ActionParameterChoice> = emptyList(),
 )
 
 data class QuickerPanelScene(
@@ -27,14 +29,17 @@ data class QuickerPanelActionCatalog(
         get() = scenes.flatMap(QuickerPanelScene::actions)
 }
 
+internal class UnsupportedPanelCatalogVersionException :
+    IllegalArgumentException("动作目录版本不受支持")
+
 object QuickerPanelActionsProtocol {
     const val COMPANION_SHARED_ACTION_ID = "b02b2732-f087-4e45-416d-08deee3e76ba"
-    const val LIST_COMMAND = "quickerlink:list-panel-actions:v3"
+    const val LIST_COMMAND = "quickerlink:list-panel-actions:v4"
     const val GLOBAL_SCENE = "_global"
     const val COMMON_SCENE = "common"
 
     private const val PROTOCOL = "quickerlink.panel-actions"
-    private const val VERSION = 3
+    private const val VERSION = 4
     private const val MAX_PAYLOAD_LENGTH = 262_144
     private const val MAX_GROUPS_PER_SCENE = 100
     private const val MAX_ACTIONS = 500
@@ -42,19 +47,25 @@ object QuickerPanelActionsProtocol {
     private const val MAX_TITLE_LENGTH = 160
     private const val MAX_ICON_LENGTH = 22_000
     private const val MAX_ICON_BYTES = 16_384
+    private const val MAX_PARAMETER_CHOICES_PER_ACTION = 50
+    private const val MAX_PARAMETER_CHOICE_LABEL_LENGTH = 120
+    private const val MAX_PARAMETER_CHOICE_VALUE_LENGTH = 2_048
     private const val MAX_ERROR_LENGTH = 200
     private const val MAX_ERROR_CODE_LENGTH = 64
     private val expectedScenes = listOf(GLOBAL_SCENE, COMMON_SCENE)
     private val successFields = setOf("protocol", "version", "ok", "scenes")
     private val errorFields = setOf("protocol", "version", "ok", "code", "error")
     private val sceneFields = setOf("scene", "groups", "actions")
-    private val actionFields = setOf("id", "title", "group", "order", "icon")
+    private val actionFields = setOf("id", "title", "group", "order", "icon", "parameterChoices")
+    private val parameterChoiceFields = setOf("label", "value")
     private val errorCodePattern = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
     fun parse(data: JsonElement?): QuickerPanelActionCatalog {
         val root = decodeRoot(data)
         require(root.string("protocol") == PROTOCOL) { "动作目录协议无效" }
-        require(root.int("version") == VERSION) { "动作目录版本不受支持" }
+        if (root.int("version") != VERSION) {
+            throw UnsupportedPanelCatalogVersionException()
+        }
         if (!root.boolean("ok")) {
             root.requireFields(errorFields, "动作目录错误响应格式无效")
             val code = root.string("code")
@@ -115,15 +126,43 @@ object QuickerPanelActionsProtocol {
             require(order > previousOrder) { "动作顺序无效" }
             previousOrder = order
             val icon = validateIcon(item.nullableString("icon"))
+            val parameterChoices = parseParameterChoices(item)
             QuickerPanelAction(
                 id = id,
                 title = title,
                 group = group,
                 order = order,
                 icon = icon,
+                parameterChoices = parameterChoices,
             )
         }
         return QuickerPanelScene(scene = scene, groups = groups, actions = actions)
+    }
+
+    private fun parseParameterChoices(item: JsonObject): List<ActionParameterChoice> {
+        val choices = item.array(
+            "parameterChoices",
+            "动作目录缺少快捷参数",
+            "快捷参数格式无效",
+        )
+        require(choices.size() <= MAX_PARAMETER_CHOICES_PER_ACTION) { "快捷参数数量过多" }
+        return choices.map { element ->
+            require(element.isJsonObject) { "快捷参数格式无效" }
+            val choice = element.asJsonObject
+            choice.requireFields(parameterChoiceFields, "快捷参数字段无效")
+            ActionParameterChoice(
+                label = validateText(
+                    choice.string("label"),
+                    MAX_PARAMETER_CHOICE_LABEL_LENGTH,
+                    "快捷参数名称",
+                ),
+                value = validateText(
+                    choice.string("value"),
+                    MAX_PARAMETER_CHOICE_VALUE_LENGTH,
+                    "快捷参数值",
+                ),
+            )
+        }
     }
 
     private fun decodeRoot(data: JsonElement?): JsonObject {

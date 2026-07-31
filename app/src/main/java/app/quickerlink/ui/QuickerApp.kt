@@ -65,6 +65,9 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -280,7 +283,7 @@ fun QuickerApp(
         AlertDialog(
             onDismissRequest = viewModel::dismissCompanionActionPrompt,
             icon = { Icon(Icons.Outlined.Link, contentDescription = null) },
-            title = { Text("需要 Quicker Link 动作") },
+            title = { Text("请安装或更新 Quicker Link 动作") },
             text = {
                 Text("刷新面板动作需要先在电脑上安装或更新配套的 Quicker Link 动作。")
             },
@@ -794,22 +797,33 @@ private fun SavedActionTile(
                         )
                     }
                     DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                        DropdownMenuItem(
-                            text = { Text("编辑") },
-                            leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onEdit()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("删除") },
-                            leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onDelete()
-                            },
-                        )
+                        if (action.quickerActionId != null) {
+                            DropdownMenuItem(
+                                text = { Text("运行设置") },
+                                leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onEdit()
+                                },
+                            )
+                        } else {
+                            DropdownMenuItem(
+                                text = { Text("编辑") },
+                                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onEdit()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("删除") },
+                                leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onDelete()
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -1435,6 +1449,7 @@ private fun SectionTitle(text: String, modifier: Modifier = Modifier) {
     Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = modifier)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ActionEditorDialog(
     action: SavedAction?,
@@ -1444,14 +1459,28 @@ private fun ActionEditorDialog(
     var label by rememberSaveable(action?.id) { mutableStateOf(action?.label.orEmpty()) }
     var target by rememberSaveable(action?.id) { mutableStateOf(action?.actionTarget.orEmpty()) }
     var parameter by rememberSaveable(action?.id) { mutableStateOf(action?.parameter.orEmpty()) }
+    var parameterMenuExpanded by remember(action?.id) { mutableStateOf(false) }
     var confirm by rememberSaveable(action?.id) { mutableStateOf(action?.confirmBeforeRun ?: false) }
-    val valid = label.isNotBlank() && target.isNotBlank()
     val synced = action?.quickerActionId != null
+    val valid = synced || (label.isNotBlank() && target.isNotBlank())
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = { Icon(Icons.Outlined.Bolt, contentDescription = null) },
-        title = { Text(if (action == null) "添加动作" else "编辑动作") },
+        icon = {
+            Icon(
+                if (synced) Icons.Outlined.Settings else Icons.Outlined.Bolt,
+                contentDescription = null,
+            )
+        },
+        title = {
+            Text(
+                when {
+                    action == null -> "添加动作"
+                    synced -> "运行设置"
+                    else -> "编辑动作"
+                },
+            )
+        },
         text = {
             Column(
                 modifier = Modifier
@@ -1460,30 +1489,88 @@ private fun ActionEditorDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                OutlinedTextField(
-                    value = label,
-                    onValueChange = { label = it },
-                    label = { Text("显示名称") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !synced,
-                )
-                OutlinedTextField(
-                    value = target,
-                    onValueChange = { target = it },
-                    label = { Text("Quicker 动作名称或 ID") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !synced,
-                )
-                OutlinedTextField(
-                    value = parameter,
-                    onValueChange = { parameter = it },
-                    label = { Text("动作参数") },
-                    minLines = 2,
-                    maxLines = 4,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                if (synced) {
+                    Text(
+                        text = action?.label.orEmpty(),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = label,
+                        onValueChange = { label = it },
+                        label = { Text("显示名称") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = target,
+                        onValueChange = { target = it },
+                        label = { Text("Quicker 动作名称或 ID") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (action?.parameterChoices.isNullOrEmpty()) {
+                    OutlinedTextField(
+                        value = parameter,
+                        onValueChange = { parameter = it },
+                        label = { Text("动作参数") },
+                        minLines = 2,
+                        maxLines = 4,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    ExposedDropdownMenuBox(
+                        expanded = parameterMenuExpanded,
+                        onExpandedChange = { parameterMenuExpanded = it },
+                    ) {
+                        OutlinedTextField(
+                            value = parameter,
+                            onValueChange = { parameter = it },
+                            label = { Text("动作参数") },
+                            minLines = 2,
+                            maxLines = 4,
+                            trailingIcon = {
+                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = parameterMenuExpanded)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable, enabled = true),
+                        )
+                        ExposedDropdownMenu(
+                            expanded = parameterMenuExpanded,
+                            onDismissRequest = { parameterMenuExpanded = false },
+                        ) {
+                            action.parameterChoices.forEach { choice ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Text(
+                                                text = choice.label,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            if (choice.value != choice.label) {
+                                                Text(
+                                                    text = choice.value,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onClick = {
+                                        parameter = choice.value
+                                        parameterMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1507,9 +1594,10 @@ private fun ActionEditorDialog(
                     onSave(
                         SavedAction(
                             id = action?.id ?: SavedAction(label = "", actionTarget = "").id,
-                            label = label.trim(),
-                            actionTarget = target.trim(),
+                            label = if (synced) requireNotNull(action).label else label.trim(),
+                            actionTarget = if (synced) requireNotNull(action).actionTarget else target.trim(),
                             parameter = parameter,
+                            parameterChoices = action?.parameterChoices.orEmpty(),
                             confirmBeforeRun = confirm,
                             quickerActionId = action?.quickerActionId,
                             sourceGroup = action?.sourceGroup,

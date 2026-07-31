@@ -6,6 +6,8 @@ import app.quickerlink.connection.QuickerConnectionState
 import app.quickerlink.connection.QuickerPanelAction
 import app.quickerlink.connection.QuickerPanelActionCatalog
 import app.quickerlink.connection.QuickerPanelActionsProtocol
+import app.quickerlink.connection.UnsupportedPanelCatalogVersionException
+import app.quickerlink.data.ActionParameterChoice
 import app.quickerlink.data.SavedAction
 import app.quickerlink.data.StoredConnection
 import app.quickerlink.update.UpdateFailure
@@ -15,6 +17,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
 
 class QuickerViewModelStateTest {
     private val config = QuickerConnectionConfig(
@@ -119,6 +122,20 @@ class QuickerViewModelStateTest {
     }
 
     @Test
+    fun panelSyncPromptsOnlyWhenCompanionActionNeedsInstallationOrUpdate() {
+        val missing = classifyPanelSyncFailure(CompanionActionUnavailableException("not found"))
+        val outdated = classifyPanelSyncFailure(UnsupportedPanelCatalogVersionException())
+        val network = classifyPanelSyncFailure(IOException("等待响应超时"))
+
+        assertTrue(missing.showCompanionActionPrompt)
+        assertEquals("未找到可用的 Quicker Link 动作，请先安装或更新", missing.message)
+        assertTrue(outdated.showCompanionActionPrompt)
+        assertEquals("Quicker Link 动作版本过旧，请更新后重试", outdated.message)
+        assertFalse(network.showCompanionActionPrompt)
+        assertEquals("等待响应超时", network.message)
+    }
+
+    @Test
     fun panelActionSyncPreservesSceneAndPanelOrder() {
         val catalog = panelCatalog(
             globalGroups = listOf("常用"),
@@ -152,6 +169,11 @@ class QuickerViewModelStateTest {
 
     @Test
     fun fullPanelSyncUpdatesMappingsRemovesAllMissingSyncedItemsAndKeepsManualActions() {
+        val oldChoices = listOf(ActionParameterChoice("旧选项", "old_value"))
+        val refreshedChoices = listOf(
+            ActionParameterChoice("设置", "action_settings"),
+            ActionParameterChoice("录制", "action_ffmpeg"),
+        )
         val manual = SavedAction(
             id = "manual",
             label = "手工动作",
@@ -165,6 +187,7 @@ class QuickerViewModelStateTest {
                 label = "旧名称",
                 actionTarget = FIRST_ACTION_ID,
                 parameter = "保留参数",
+                parameterChoices = oldChoices,
                 confirmBeforeRun = true,
                 quickerActionId = FIRST_ACTION_ID.uppercase(),
                 sourceGroup = "旧分组",
@@ -189,7 +212,16 @@ class QuickerViewModelStateTest {
         )
         val catalog = panelCatalog(
             globalGroups = listOf("新分组"),
-            globalActions = listOf(QuickerPanelAction(FIRST_ACTION_ID, "新名称", "新分组", 4, ICON_URL)),
+            globalActions = listOf(
+                QuickerPanelAction(
+                    FIRST_ACTION_ID,
+                    "新名称",
+                    "新分组",
+                    4,
+                    ICON_URL,
+                    refreshedChoices,
+                ),
+            ),
         )
 
         val merged = mergePanelActions(existing, catalog)
@@ -198,10 +230,70 @@ class QuickerViewModelStateTest {
         assertEquals("新名称", merged.first().label)
         assertEquals("新分组", merged.first().sourceGroup)
         assertEquals("保留参数", merged.first().parameter)
+        assertEquals(refreshedChoices, merged.first().parameterChoices)
         assertTrue(merged.first().confirmBeforeRun)
         assertEquals(QuickerPanelActionsProtocol.GLOBAL_SCENE, merged.first().sourceScene)
         assertEquals(ICON_URL, merged.first().icon)
         assertEquals(manual, merged.last())
+    }
+
+    @Test
+    fun synchronizedActionEditChangesOnlyLocalRunSettings() {
+        val choices = listOf(ActionParameterChoice("设置", "action_settings"))
+        val existing = SavedAction(
+            id = "synced",
+            label = "电脑名称",
+            actionTarget = FIRST_ACTION_ID,
+            parameterChoices = choices,
+            quickerActionId = FIRST_ACTION_ID,
+            sourceScene = QuickerPanelActionsProtocol.GLOBAL_SCENE,
+            icon = ICON_URL,
+        )
+        val edited = existing.copy(
+            label = "伪造名称",
+            actionTarget = SECOND_ACTION_ID,
+            parameter = "action_settings",
+            parameterChoices = listOf(ActionParameterChoice("伪造", "forged")),
+            confirmBeforeRun = true,
+            sourceScene = QuickerPanelActionsProtocol.COMMON_SCENE,
+            icon = null,
+        )
+
+        val saved = applyActionSave(listOf(existing), edited).single()
+
+        assertEquals(existing.copy(parameter = "action_settings", confirmBeforeRun = true), saved)
+        assertEquals(choices, saved.parameterChoices)
+    }
+
+    @Test
+    fun savingStaleSynchronizedEditorCannotRestoreActionRemovedByRefresh() {
+        val stale = SavedAction(
+            id = "synced",
+            label = "已移除动作",
+            actionTarget = FIRST_ACTION_ID,
+            parameter = "payload",
+            quickerActionId = FIRST_ACTION_ID,
+        )
+
+        assertEquals(emptyList<SavedAction>(), applyActionSave(emptyList(), stale))
+    }
+
+    @Test
+    fun deletingUsesCurrentStoredActionClassification() {
+        val synchronized = SavedAction(
+            id = "shared-id",
+            label = "同步动作",
+            actionTarget = FIRST_ACTION_ID,
+            quickerActionId = FIRST_ACTION_ID,
+        )
+        val staleManualSnapshot = synchronized.copy(quickerActionId = null)
+
+        assertNull(removeManualAction(listOf(synchronized), staleManualSnapshot.id))
+
+        val manual = staleManualSnapshot.copy(label = "手工动作")
+        assertEquals(emptyList<SavedAction>(), removeManualAction(listOf(manual), manual.id))
+        val current = listOf(manual)
+        assertSame(current, removeManualAction(current, "missing"))
     }
 
     @Test
