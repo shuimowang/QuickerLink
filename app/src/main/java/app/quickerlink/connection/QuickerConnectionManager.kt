@@ -443,20 +443,14 @@ class QuickerConnectionManager private constructor(
 
             when (message.messageType) {
                 QuickerProtocol.MESSAGE_AUTH_RESPONSE -> {
-                    val matchingRequest = synchronized(lock) {
-                        isCurrentLocked(token) &&
-                            mutableState.value is QuickerConnectionState.Authenticating &&
-                            authRequestSerial != null &&
-                            message.replyTo == authRequestSerial
-                    }
-                    if (matchingRequest) {
-                        handleAuthResponse(
-                            token = token,
-                            endpoint = endpoint,
-                            webSocket = webSocket,
-                            message = message,
-                        )
-                    } else {
+                    val accepted = handleAuthResponse(
+                        token = token,
+                        config = config,
+                        endpoint = endpoint,
+                        webSocket = webSocket,
+                        message = message,
+                    )
+                    if (!accepted) {
                         emitIgnoredAuthResponse()
                     }
                 }
@@ -550,16 +544,22 @@ class QuickerConnectionManager private constructor(
 
     private fun handleAuthResponse(
         token: Long,
+        config: QuickerConnectionConfig,
         endpoint: String,
         webSocket: WebSocket,
         message: QuickerMessage,
-    ) {
+    ): Boolean {
         val accepted = synchronized(lock) {
+            val replyMatches = if (config.password.isEmpty()) {
+                authRequestSerial == null && message.replyTo == PASSWORDLESS_AUTH_REPLY_TO
+            } else {
+                authRequestSerial != null && message.replyTo == authRequestSerial
+            }
             if (
                 !isCurrentLocked(token) ||
                 mutableState.value !is QuickerConnectionState.Authenticating ||
-                authRequestSerial == null ||
-                message.replyTo != authRequestSerial
+                desiredConfig != config ||
+                !replyMatches
             ) {
                 false
             } else {
@@ -584,7 +584,7 @@ class QuickerConnectionManager private constructor(
                 true
             }
         }
-        if (!accepted) return
+        if (!accepted) return false
 
         if (message.isSuccess == true) {
             mutableEvents.tryEmit(QuickerConnectionEvent(QuickerEventDirection.SYSTEM, "认证成功"))
@@ -593,6 +593,7 @@ class QuickerConnectionManager private constructor(
             mutableEvents.tryEmit(QuickerConnectionEvent(QuickerEventDirection.SYSTEM, "认证失败：$reason"))
             webSocket.close(1000, "Authentication failed")
         }
+        return true
     }
 
     private fun handleDisconnect(
@@ -745,6 +746,7 @@ class QuickerConnectionManager private constructor(
     companion object {
         private const val AUTH_TIMEOUT_MS = 10_000L
         private const val DEFAULT_COMMAND_TIMEOUT_MS = 30_000L
+        private const val PASSWORDLESS_AUTH_REPLY_TO = 0L
 
         private fun defaultRetryDelayMillis(attempt: Int): Long {
             val baseDelaySeconds = min(30L, 1L shl min(attempt - 1, 5))

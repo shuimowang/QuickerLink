@@ -313,6 +313,27 @@ class QuickerConnectionManagerTest {
     }
 
     @Test
+    fun `passwordless auth accepts only the current handshake reply zero`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+        manager.connect(CONFIG.copy(password = ""))
+        val socket = factory.latestSocket()
+        socket.open()
+
+        assertTrue(socket.sentTexts.isEmpty())
+        socket.receive("""{"messageType":6,"isSuccess":true}""")
+        socket.receive("""{"messageType":6,"replyTo":1,"isSuccess":true}""")
+        assertEquals(QuickerConnectionState.Authenticating, manager.state.value)
+
+        socket.receive("""{"messageType":6,"replyTo":0,"isSuccess":true}""")
+        assertTrue(manager.state.value is QuickerConnectionState.Ready)
+        manager.close()
+    }
+
+    @Test
     fun `oversized wss text is rejected before protocol parsing`() = runTest {
         val payloads = listOf(
             """{"messageType":6,"replyTo":1,"isSuccess":true,"padding":"${"x".repeat(MAX_WSS_TEXT_CHARACTERS)}"}""",

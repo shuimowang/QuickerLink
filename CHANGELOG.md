@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.3.0-alpha.2] - 2026-07-31
+
+### Fixed
+
+- Restore WSS authentication when Quicker is configured without a verification code while keeping authentication responses strictly bound to the active connection
+
 ## [0.3.0-alpha.1] - 2026-07-31
 
 ### Added
