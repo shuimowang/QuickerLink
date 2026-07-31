@@ -42,7 +42,7 @@ data class SavedDownload(
 )
 
 internal class TransferFileTooLargeException :
-    IllegalArgumentException("文件超过 8 MiB 上限")
+    IllegalArgumentException("文件超过 64 MiB 上限")
 
 class AndroidTransferStore(context: Context) {
     private val appContext = context.applicationContext

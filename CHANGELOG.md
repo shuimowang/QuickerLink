@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.4.0-alpha.1] - 2026-07-31
+
+### Added
+
+- Map one explicit tap from the current full-screen snapshot to a one-time desktop left click, then refresh the snapshot
+- Let the desktop pairing window choose and persist the directory used for files sent from the phone
+- Add confirmed sleep, shutdown, and Quicker restart controls backed by a fixed command allowlist
+- Add a clear control to the transfer text editor
+
+### Changed
+
+- Raise the single-file transfer limit from 8 MiB to 64 MiB while retaining ordered 64 KiB chunks, temporary staging, cancellation, and SHA-256 verification
+- Use the Windows Downloads known folder by default so redirected Downloads locations are respected
+- Keep clipboard copy in the transfer workspace and reduce the connection-page text shortcut to paste only
+- Upgrade the strict catalog, action-control, and toolbox contract to v7
+- Tighten the desktop pairing window by removing its duplicate heading and reducing the QR code footprint
+- Pin GitHub Actions used by CI, Pages, and signed releases to immutable commit revisions
+
+### Fixed
+
+- Treat an uninitialized Quicker common panel as an empty scene instead of failing the complete global/common synchronization
+- Remove the former 500-group and 500-action catalog ceilings, raising the logical guard to 10,000 while retaining the bounded response-size limit
+- Restore Link capabilities once on the first successful connection of each app session while avoiding repeated synchronization on same-computer reconnects
+- Preserve large action catalogs by treating inline icons and shortcut parameters as optional metadata when the bounded response budget is exhausted
+
 ## [0.3.0-alpha.3] - 2026-07-31
 
 ### Fixed

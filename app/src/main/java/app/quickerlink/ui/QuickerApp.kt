@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
@@ -39,10 +40,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Clear
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ClearAll
-import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
@@ -56,12 +58,15 @@ import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Password
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -124,6 +129,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -144,6 +150,7 @@ import app.quickerlink.UiNotice
 import app.quickerlink.connection.QuickerConnectionState
 import app.quickerlink.connection.QuickerEndpoint
 import app.quickerlink.connection.QuickerEventDirection
+import app.quickerlink.connection.QuickerSystemCommand
 import app.quickerlink.data.SavedAction
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
@@ -259,9 +266,11 @@ fun QuickerApp(
                     onReadClipboard = viewModel::readComputerClipboard,
                     onSendText = viewModel::sendToolboxText,
                     onCaptureScreen = viewModel::captureComputerScreen,
+                    onScreenClick = viewModel::clickComputerScreen,
                     onSaveScreen = viewModel::saveScreenToDownloads,
                     onChooseFile = onChooseFile,
                     onReceiveFile = viewModel::receiveFileFromComputer,
+                    onSystemCommand = viewModel::runSystemCommand,
                     onCancel = viewModel::cancelToolboxTransfer,
                     onRetry = viewModel::retryUploadConfirmation,
                     onClearStatus = viewModel::clearToolboxStatus,
@@ -290,7 +299,7 @@ fun QuickerApp(
                 onDisconnect = viewModel::disconnect,
                 onRequestPermission = onRequestLocalNetworkPermission,
                 onOpenAppSettings = onOpenAppSettings,
-                onSendText = viewModel::sendText,
+                onPasteText = viewModel::pasteText,
                 onClearLogs = viewModel::clearLogs,
             )
 
@@ -1027,9 +1036,11 @@ private fun TransferScreen(
     onReadClipboard: () -> Unit,
     onSendText: () -> Unit,
     onCaptureScreen: () -> Unit,
+    onScreenClick: (String, Int, Int) -> Unit,
     onSaveScreen: () -> Unit,
     onChooseFile: () -> Unit,
     onReceiveFile: () -> Unit,
+    onSystemCommand: (QuickerSystemCommand) -> Unit,
     onCancel: () -> Unit,
     onRetry: () -> Unit,
     onClearStatus: () -> Unit,
@@ -1038,6 +1049,8 @@ private fun TransferScreen(
     val controlsLocked = state.toolboxStatus is ToolboxStatus.Working ||
         (state.toolboxStatus as? ToolboxStatus.Failed)?.canRetry == true
     var showScreenPreview by rememberSaveable { mutableStateOf(false) }
+    var screenClickMode by rememberSaveable { mutableStateOf(false) }
+    var pendingSystemCommand by remember { mutableStateOf<QuickerSystemCommand?>(null) }
 
     LazyColumn(
         modifier = Modifier
@@ -1179,6 +1192,18 @@ private fun TransferScreen(
                     minLines = 3,
                     maxLines = 7,
                     enabled = !controlsLocked,
+                    trailingIcon = if (state.toolboxText.isNotEmpty()) {
+                        {
+                            IconButton(
+                                onClick = { onTextChanged("") },
+                                enabled = !controlsLocked,
+                            ) {
+                                Icon(Icons.Outlined.Clear, contentDescription = "清空文本")
+                            }
+                        }
+                    } else {
+                        null
+                    },
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1220,7 +1245,7 @@ private fun TransferScreen(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        "单个文件不超过 8 MiB",
+                        "单个文件不超过 64 MiB",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1250,12 +1275,96 @@ private fun TransferScreen(
                 }
             }
         }
+
+        if (state.linkCapabilities?.systemControl == true) {
+            item {
+                HorizontalDivider(modifier = Modifier.padding(top = 2.dp))
+                Column(
+                    modifier = Modifier.padding(top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        "电脑控制",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        SystemCommandButton(
+                            label = "睡眠",
+                            icon = Icons.Outlined.Bedtime,
+                            enabled = connected && !controlsLocked,
+                            modifier = Modifier.weight(1f),
+                            onClick = { pendingSystemCommand = QuickerSystemCommand.SLEEP },
+                        )
+                        SystemCommandButton(
+                            label = "关机",
+                            icon = Icons.Outlined.PowerSettingsNew,
+                            enabled = connected && !controlsLocked,
+                            modifier = Modifier.weight(1f),
+                            onClick = { pendingSystemCommand = QuickerSystemCommand.SHUTDOWN },
+                        )
+                        SystemCommandButton(
+                            label = "重启\nQuicker",
+                            icon = Icons.Outlined.RestartAlt,
+                            enabled = connected && !controlsLocked,
+                            modifier = Modifier.weight(1f),
+                            onClick = { pendingSystemCommand = QuickerSystemCommand.RESTART_QUICKER },
+                        )
+                    }
+                }
+            }
+        }
     }
 
     if (showScreenPreview) {
         state.screenPreview?.let { preview ->
+            val imageDimensions by produceState<Pair<Int, Int>?>(
+                initialValue = null,
+                key1 = preview.path,
+            ) {
+                value = withContext(Dispatchers.IO) {
+                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(preview.path, options)
+                    if (options.outWidth > 0 && options.outHeight > 0) {
+                        options.outWidth to options.outHeight
+                    } else {
+                        null
+                    }
+                }
+            }
+            LaunchedEffect(preview.captureId) {
+                screenClickMode = false
+            }
+            val captureId = preview.captureId
+            val clickAvailable = state.linkCapabilities?.screenClick == true &&
+                captureId != null && connected && !controlsLocked && imageDimensions != null
+            val screenTapModifier = if (screenClickMode && clickAvailable) {
+                Modifier.pointerInput(preview.path, captureId, imageDimensions) {
+                    detectTapGestures { offset ->
+                        val dimensions = imageDimensions ?: return@detectTapGestures
+                        val point = mapScreenTap(
+                            containerWidth = size.width.toFloat(),
+                            containerHeight = size.height.toFloat(),
+                            imageWidth = dimensions.first,
+                            imageHeight = dimensions.second,
+                            tapX = offset.x,
+                            tapY = offset.y,
+                        ) ?: return@detectTapGestures
+                        screenClickMode = false
+                        onScreenClick(requireNotNull(captureId), point.x, point.y)
+                    }
+                }
+            } else {
+                Modifier
+            }
             Dialog(
-                onDismissRequest = { showScreenPreview = false },
+                onDismissRequest = {
+                    screenClickMode = false
+                    showScreenPreview = false
+                },
                 properties = DialogProperties(
                     usePlatformDefaultWidth = false,
                 ),
@@ -1269,11 +1378,52 @@ private fun TransferScreen(
                     AsyncImage(
                         model = File(preview.path),
                         contentDescription = "电脑当前屏幕",
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .then(screenTapModifier),
                         contentScale = ContentScale.Fit,
                     )
+                    if (state.linkCapabilities?.screenClick == true) {
+                        SingleChoiceSegmentedButtonRow(
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(18.dp)
+                                .widthIn(max = 184.dp),
+                        ) {
+                            SegmentedButton(
+                                selected = !screenClickMode,
+                                onClick = { screenClickMode = false },
+                                shape = SegmentedButtonDefaults.itemShape(0, 2),
+                                icon = {
+                                    Icon(
+                                        Icons.Outlined.Visibility,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                },
+                                label = { Text("查看") },
+                            )
+                            SegmentedButton(
+                                selected = screenClickMode,
+                                onClick = { screenClickMode = true },
+                                enabled = clickAvailable,
+                                shape = SegmentedButtonDefaults.itemShape(1, 2),
+                                icon = {
+                                    Icon(
+                                        Icons.Outlined.TouchApp,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                },
+                                label = { Text("点击") },
+                            )
+                        }
+                    }
                     IconButton(
-                        onClick = { showScreenPreview = false },
+                        onClick = {
+                            screenClickMode = false
+                            showScreenPreview = false
+                        },
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(18.dp)
@@ -1285,6 +1435,79 @@ private fun TransferScreen(
             }
         }
     }
+
+    pendingSystemCommand?.let { command ->
+        AlertDialog(
+            onDismissRequest = { pendingSystemCommand = null },
+            icon = { Icon(systemCommandIcon(command), contentDescription = null) },
+            title = { Text("确认${systemCommandTitle(command)}？") },
+            text = { Text(systemCommandConfirmation(command)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingSystemCommand = null
+                        onSystemCommand(command)
+                    },
+                    enabled = connected && !controlsLocked,
+                ) {
+                    Text("确认执行", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingSystemCommand = null }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SystemCommandButton(
+    label: String,
+    icon: ImageVector,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(78.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(21.dp))
+            Spacer(Modifier.height(5.dp))
+            Text(
+                label,
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 2,
+            )
+        }
+    }
+}
+
+private fun systemCommandTitle(command: QuickerSystemCommand): String = when (command) {
+    QuickerSystemCommand.SHUTDOWN -> "关闭电脑"
+    QuickerSystemCommand.SLEEP -> "让电脑睡眠"
+    QuickerSystemCommand.RESTART_QUICKER -> "重启 Quicker"
+}
+
+private fun systemCommandConfirmation(command: QuickerSystemCommand): String = when (command) {
+    QuickerSystemCommand.SHUTDOWN -> "电脑将立即关机，未保存的内容可能丢失。"
+    QuickerSystemCommand.SLEEP -> "电脑将进入睡眠状态，当前连接会暂时断开。"
+    QuickerSystemCommand.RESTART_QUICKER -> "Quicker 将重新启动，当前连接会短暂断开。"
+}
+
+private fun systemCommandIcon(command: QuickerSystemCommand): ImageVector = when (command) {
+    QuickerSystemCommand.SHUTDOWN -> Icons.Outlined.PowerSettingsNew
+    QuickerSystemCommand.SLEEP -> Icons.Outlined.Bedtime
+    QuickerSystemCommand.RESTART_QUICKER -> Icons.Outlined.RestartAlt
 }
 
 @Composable
@@ -1380,11 +1603,10 @@ private fun ConnectionScreen(
     onDisconnect: () -> Unit,
     onRequestPermission: () -> Unit,
     onOpenAppSettings: () -> Unit,
-    onSendText: (String, String) -> Unit,
+    onPasteText: (String) -> Unit,
     onClearLogs: () -> Unit,
 ) {
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
-    var textOperation by rememberSaveable { mutableStateOf("paste") }
     var textToSend by rememberSaveable { mutableStateOf("") }
     var advancedExpanded by rememberSaveable { mutableStateOf(false) }
     var logsExpanded by rememberSaveable { mutableStateOf(false) }
@@ -1575,23 +1797,7 @@ private fun ConnectionScreen(
             Spacer(Modifier.height(8.dp))
             HorizontalDivider()
             Spacer(Modifier.height(16.dp))
-            SectionTitle("发送文本")
-        }
-
-        item {
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                listOf("paste" to "粘贴", "copy" to "复制").forEachIndexed { index, (operation, label) ->
-                    SegmentedButton(
-                        selected = textOperation == operation,
-                        onClick = { textOperation = operation },
-                        shape = SegmentedButtonDefaults.itemShape(index, 2),
-                        icon = {
-                            Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-                        },
-                        label = { Text(label) },
-                    )
-                }
-            }
+            SectionTitle("快速粘贴")
         }
 
         item {
@@ -1607,13 +1813,13 @@ private fun ConnectionScreen(
 
         item {
             Button(
-                onClick = { onSendText(textOperation, textToSend) },
+                onClick = { onPasteText(textToSend) },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = connected && textToSend.isNotEmpty(),
             ) {
-                Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null)
+                Icon(Icons.Outlined.ContentPaste, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (textOperation == "paste") "粘贴到电脑" else "复制到电脑剪贴板")
+                Text("粘贴到当前窗口")
             }
         }
 

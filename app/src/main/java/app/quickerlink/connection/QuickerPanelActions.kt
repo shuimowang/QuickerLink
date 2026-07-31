@@ -32,7 +32,9 @@ data class QuickerPanelActionCatalog(
 data class QuickerLinkCapabilities(
     val stopAction: Boolean = true,
     val screenCapture: Boolean = true,
+    val screenClick: Boolean = true,
     val clipboardRead: Boolean = true,
+    val systemControl: Boolean = true,
     val maxFileBytes: Long = QuickerToolboxProtocol.MAX_FILE_BYTES,
     val chunkBytes: Int = QuickerToolboxProtocol.CHUNK_BYTES,
 )
@@ -42,15 +44,15 @@ internal class UnsupportedPanelCatalogVersionException :
 
 object QuickerPanelActionsProtocol {
     const val COMPANION_SHARED_ACTION_ID = "b02b2732-f087-4e45-416d-08deee3e76ba"
-    const val LIST_COMMAND = "quickerlink:list-panel-actions:v6"
+    const val LIST_COMMAND = "quickerlink:list-panel-actions:v7"
     const val GLOBAL_SCENE = "_global"
     const val COMMON_SCENE = "common"
 
     private const val PROTOCOL = "quickerlink.panel-actions"
-    private const val VERSION = 6
+    private const val VERSION = 7
     private const val MAX_PAYLOAD_LENGTH = 262_144
-    private const val MAX_GROUPS_PER_SCENE = 500
-    private const val MAX_ACTIONS = 500
+    private const val MAX_GROUPS_PER_SCENE = 10_000
+    private const val MAX_ACTIONS = 10_000
     private const val MAX_GROUP_LENGTH = 80
     private const val MAX_TITLE_LENGTH = 160
     private const val MAX_ICON_LENGTH = 22_000
@@ -63,7 +65,14 @@ object QuickerPanelActionsProtocol {
     private val expectedScenes = listOf(GLOBAL_SCENE, COMMON_SCENE)
     private val successFields = setOf("protocol", "version", "ok", "capabilities", "scenes")
     private val errorFields = setOf("protocol", "version", "ok", "code", "error")
-    private val capabilityFields = setOf("stopAction", "screenCapture", "clipboardRead", "fileTransfer")
+    private val capabilityFields = setOf(
+        "stopAction",
+        "screenCapture",
+        "screenClick",
+        "clipboardRead",
+        "systemControl",
+        "fileTransfer",
+    )
     private val fileTransferCapabilityFields = setOf("maxBytes", "chunkBytes")
     private val sceneFields = setOf("scene", "groups", "actions")
     private val actionFields = setOf("id", "title", "group", "order", "icon", "parameterChoices")
@@ -91,7 +100,9 @@ object QuickerPanelActionsProtocol {
         capabilities.requireFields(capabilityFields, "动作能力字段无效")
         require(capabilities.boolean("stopAction")) { "当前 Quicker Link 动作不支持终止动作" }
         require(capabilities.boolean("screenCapture")) { "当前 Quicker Link 动作不支持屏幕快照" }
+        require(capabilities.boolean("screenClick")) { "当前 Quicker Link 动作不支持屏幕点击" }
         require(capabilities.boolean("clipboardRead")) { "当前 Quicker Link 动作不支持读取剪贴板" }
+        require(capabilities.boolean("systemControl")) { "当前 Quicker Link 动作不支持电脑控制" }
         val fileTransfer = capabilities.obj("fileTransfer", "动作目录缺少文件传输能力", "文件传输能力格式无效")
         fileTransfer.requireFields(fileTransferCapabilityFields, "文件传输能力字段无效")
         val maxFileBytes = fileTransfer.long("maxBytes")
@@ -110,6 +121,8 @@ object QuickerPanelActionsProtocol {
         return QuickerPanelActionCatalog(
             scenes = scenes,
             capabilities = QuickerLinkCapabilities(
+                screenClick = true,
+                systemControl = true,
                 maxFileBytes = maxFileBytes,
                 chunkBytes = chunkBytes,
             ),

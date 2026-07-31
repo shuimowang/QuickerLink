@@ -19,6 +19,10 @@ data class QuickerTransferDescriptor(
 sealed interface QuickerToolboxResult {
     data class Clipboard(val text: String) : QuickerToolboxResult
     data class Transfer(val descriptor: QuickerTransferDescriptor) : QuickerToolboxResult
+    data class ScreenCapture(
+        val descriptor: QuickerTransferDescriptor,
+        val captureId: String,
+    ) : QuickerToolboxResult
     data class DownloadChunk(
         val transferId: String,
         val offset: Long,
@@ -54,13 +58,15 @@ internal class QuickerToolboxRemoteException(
 ) : RuntimeException(message)
 
 object QuickerToolboxProtocol {
-    const val VERSION = 6
-    const val MAX_FILE_BYTES = 8L * 1024 * 1024
+    const val VERSION = 7
+    const val MAX_FILE_BYTES = 64L * 1024 * 1024
     const val CHUNK_BYTES = 64 * 1024
     const val MAX_CLIPBOARD_CHARS = 16_000
+    const val NORMALIZED_COORDINATE_MAX = 1_000_000
 
     const val OP_CLIPBOARD_READ = "clipboard.read"
     const val OP_SCREEN_CAPTURE = "screen.capture"
+    const val OP_SCREEN_CLICK = "screen.click"
     const val OP_DOWNLOAD_PICK = "download.pick"
     const val OP_DOWNLOAD_CHUNK = "download.chunk"
     const val OP_DOWNLOAD_FINISH = "download.finish"
@@ -68,29 +74,32 @@ object QuickerToolboxProtocol {
     const val OP_UPLOAD_CHUNK = "upload.chunk"
     const val OP_UPLOAD_FINISH = "upload.finish"
     const val OP_TRANSFER_CANCEL = "transfer.cancel"
+    const val OP_SYSTEM_COMMAND = "system.command"
 
-    private const val COMMAND_PREFIX = "quickerlink:toolbox:v6:"
+    private const val COMMAND_PREFIX = "quickerlink:toolbox:v7:"
     private const val PROTOCOL = "quickerlink.toolbox"
     private const val LEGACY_CATALOG_PROTOCOL = "quickerlink.panel-actions"
     private const val MAX_PAYLOAD_LENGTH = 100_000
     private const val MAX_FILE_NAME_LENGTH = 120
     private const val MAX_MIME_LENGTH = 127
     private const val MAX_ERROR_CODE_LENGTH = 64
-    private const val MAX_LOCATION_LENGTH = 160
+    private const val MAX_LOCATION_LENGTH = 2_048
     private val commonSuccessFields = setOf("protocol", "version", "ok", "op")
     private val errorFields = commonSuccessFields + "code"
     private val errorCodePattern = Regex("[a-z][a-z0-9_]{0,63}")
     private val mimePattern = Regex("[!-~]{1,127}")
     private val errorMessages = mapOf(
-        "invalid_request" to "传输请求格式无效",
+        "invalid_request" to "Quicker Link 请求格式无效",
         "unsupported_operation" to "Quicker Link 动作不支持这项功能",
         "clipboard_read_failed" to "无法读取电脑剪贴板",
         "clipboard_too_large" to "电脑剪贴板文本过大",
         "screen_capture_failed" to "无法截取电脑屏幕",
+        "screen_target_expired" to "屏幕画面已失效，请刷新后重试",
+        "screen_click_failed" to "电脑未能完成屏幕点击",
         "selection_cancelled" to "已取消选择文件",
         "ui_unavailable" to "Quicker 暂时无法打开文件选择窗口",
         "file_not_found" to "所选文件已不存在",
-        "file_too_large" to "文件超过 8 MiB 上限",
+        "file_too_large" to "文件超过 64 MiB 上限",
         "file_read_failed" to "读取电脑文件失败",
         "invalid_transfer_id" to "传输标识无效",
         "transfer_not_found" to "传输已失效，请重新开始",
@@ -101,6 +110,7 @@ object QuickerToolboxProtocol {
         "transfer_incomplete" to "文件尚未传输完整",
         "storage_unavailable" to "电脑存储暂不可用",
         "save_failed" to "电脑保存文件失败",
+        "system_command_failed" to "电脑未能执行系统命令",
         "response_too_large" to "Quicker Link 响应过大",
         "internal_error" to "Quicker Link 动作执行失败",
     )
@@ -108,6 +118,18 @@ object QuickerToolboxProtocol {
     fun clipboardReadCommand(): String = command(OP_CLIPBOARD_READ)
 
     fun screenCaptureCommand(): String = command(OP_SCREEN_CAPTURE)
+
+    fun screenClickCommand(captureId: String, x: Int, y: Int): String = command(
+        OP_SCREEN_CLICK,
+        "captureId" to canonicalUuid(captureId, "屏幕标识无效"),
+        "x" to x.requireRange(0, NORMALIZED_COORDINATE_MAX, "屏幕横坐标无效"),
+        "y" to y.requireRange(0, NORMALIZED_COORDINATE_MAX, "屏幕纵坐标无效"),
+    )
+
+    fun systemCommand(command: QuickerSystemCommand): String = command(
+        OP_SYSTEM_COMMAND,
+        "command" to command.wireValue,
+    )
 
     fun downloadPickCommand(): String = command(OP_DOWNLOAD_PICK)
 
@@ -186,12 +208,13 @@ object QuickerToolboxProtocol {
 
         return when (operation) {
             OP_CLIPBOARD_READ -> parseClipboard(root)
-            OP_SCREEN_CAPTURE,
-            OP_DOWNLOAD_PICK,
-            -> parseTransfer(root)
+            OP_SCREEN_CAPTURE -> parseScreenCapture(root)
+            OP_DOWNLOAD_PICK -> parseTransfer(root)
             OP_DOWNLOAD_CHUNK -> parseDownloadChunk(root)
             OP_DOWNLOAD_FINISH,
             OP_TRANSFER_CANCEL,
+            OP_SCREEN_CLICK,
+            OP_SYSTEM_COMMAND,
             -> {
                 root.requireFields(commonSuccessFields, "工具箱完成响应格式无效")
                 QuickerToolboxResult.Completed
@@ -219,22 +242,35 @@ object QuickerToolboxProtocol {
 
     private fun parseTransfer(root: JsonObject): QuickerToolboxResult.Transfer {
         root.requireFields(commonSuccessFields + "transfer", "文件描述响应格式无效")
+        return QuickerToolboxResult.Transfer(parseTransferDescriptor(root))
+    }
+
+    private fun parseScreenCapture(root: JsonObject): QuickerToolboxResult.ScreenCapture {
+        root.requireFields(commonSuccessFields + setOf("transfer", "captureId"), "屏幕快照响应格式无效")
+        return QuickerToolboxResult.ScreenCapture(
+            descriptor = parseTransferDescriptor(root),
+            captureId = canonicalUuid(
+                root.requiredString("captureId", "屏幕标识格式无效"),
+                "屏幕标识格式无效",
+            ),
+        )
+    }
+
+    private fun parseTransferDescriptor(root: JsonObject): QuickerTransferDescriptor {
         val transfer = root.requiredObject("transfer", "文件描述格式无效")
         transfer.requireFields(
             setOf("id", "name", "mime", "size", "sha256", "chunkSize"),
             "文件描述字段无效",
         )
-        return QuickerToolboxResult.Transfer(
-            QuickerTransferDescriptor(
-                id = canonicalUuid(transfer.requiredString("id", "文件传输标识无效")),
-                name = validateFileName(transfer.requiredString("name", "文件名格式无效")),
-                mime = validateMime(transfer.requiredString("mime", "文件类型格式无效")),
-                size = transfer.requiredLong("size", "文件大小格式无效")
-                    .requireRange(0, MAX_FILE_BYTES, "文件大小无效"),
-                sha256 = validateSha256(transfer.requiredString("sha256", "文件校验值格式无效")),
-                chunkSize = transfer.requiredInt("chunkSize", "文件分块大小格式无效")
-                    .also { require(it == CHUNK_BYTES) { "文件分块大小不受支持" } },
-            ),
+        return QuickerTransferDescriptor(
+            id = canonicalUuid(transfer.requiredString("id", "文件传输标识无效")),
+            name = validateFileName(transfer.requiredString("name", "文件名格式无效")),
+            mime = validateMime(transfer.requiredString("mime", "文件类型格式无效")),
+            size = transfer.requiredLong("size", "文件大小格式无效")
+                .requireRange(0, MAX_FILE_BYTES, "文件大小无效"),
+            sha256 = validateSha256(transfer.requiredString("sha256", "文件校验值格式无效")),
+            chunkSize = transfer.requiredInt("chunkSize", "文件分块大小格式无效")
+                .also { require(it == CHUNK_BYTES) { "文件分块大小不受支持" } },
         )
     }
 
@@ -359,15 +395,20 @@ object QuickerToolboxProtocol {
         return value
     }
 
-    private fun canonicalUuid(value: String): String {
+    private fun canonicalUuid(value: String, message: String = "文件传输标识无效"): String {
         val parsed = runCatching { UUID.fromString(value) }
-            .getOrElse { throw IllegalArgumentException("文件传输标识无效") }
+            .getOrElse { throw IllegalArgumentException(message) }
         val canonical = parsed.toString()
-        require(value == canonical) { "文件传输标识无效" }
+        require(value == canonical) { message }
         return canonical
     }
 
     private fun Long.requireRange(minimum: Long, maximum: Long, message: String): Long {
+        require(this in minimum..maximum) { message }
+        return this
+    }
+
+    private fun Int.requireRange(minimum: Int, maximum: Int, message: String): Int {
         require(this in minimum..maximum) { message }
         return this
     }
@@ -417,6 +458,7 @@ object QuickerToolboxProtocol {
     private val supportedOperations = setOf(
         OP_CLIPBOARD_READ,
         OP_SCREEN_CAPTURE,
+        OP_SCREEN_CLICK,
         OP_DOWNLOAD_PICK,
         OP_DOWNLOAD_CHUNK,
         OP_DOWNLOAD_FINISH,
@@ -424,6 +466,13 @@ object QuickerToolboxProtocol {
         OP_UPLOAD_CHUNK,
         OP_UPLOAD_FINISH,
         OP_TRANSFER_CANCEL,
+        OP_SYSTEM_COMMAND,
     )
     private val integerPattern = Regex("0|-?[1-9][0-9]*")
+}
+
+enum class QuickerSystemCommand(val wireValue: String) {
+    SHUTDOWN("shutdown"),
+    SLEEP("sleep"),
+    RESTART_QUICKER("restart-quicker"),
 }

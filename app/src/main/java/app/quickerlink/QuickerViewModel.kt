@@ -23,6 +23,8 @@ import app.quickerlink.connection.QuickerPairingCode
 import app.quickerlink.connection.QuickerProtocol
 import app.quickerlink.connection.QuickerPanelActionCatalog
 import app.quickerlink.connection.QuickerPanelActionsProtocol
+import app.quickerlink.connection.QuickerLinkCapabilities
+import app.quickerlink.connection.QuickerSystemCommand
 import app.quickerlink.connection.QuickerToolboxProtocol
 import app.quickerlink.connection.QuickerToolboxRemoteException
 import app.quickerlink.connection.QuickerToolboxResult
@@ -54,6 +56,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -90,9 +93,11 @@ sealed interface QuickerDiscoveryState {
 enum class ToolboxTask {
     CLIPBOARD,
     SCREEN,
+    SCREEN_CLICK,
     RECEIVE_FILE,
     SEND_FILE,
     SAVE_SCREEN,
+    SYSTEM_CONTROL,
 }
 
 sealed interface ToolboxStatus {
@@ -131,6 +136,7 @@ data class ScreenPreviewState(
     val path: String,
     val name: String,
     val capturedAt: String,
+    val captureId: String?,
     val savedLocation: String? = null,
 )
 
@@ -148,6 +154,7 @@ data class QuickerUiState(
     val catalogActionId: String = QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
     val syncingPanelActions: Boolean = false,
     val companionActionPromptVisible: Boolean = false,
+    val linkCapabilities: QuickerLinkCapabilities? = null,
     val runningActionIds: Set<String> = emptySet(),
     val toolboxText: String = "",
     val toolboxStatus: ToolboxStatus = ToolboxStatus.Idle,
@@ -382,6 +389,28 @@ private fun StoredConnection.toReconnectConfigOrNull(): QuickerConnectionConfig?
     return QuickerConnectionConfig(ipAddress, port, password)
 }
 
+internal data class QuickerLinkTarget(
+    val ipAddress: String,
+    val port: Int,
+    val serviceActionId: String,
+)
+
+private fun QuickerConnectionConfig.toLinkTarget(serviceActionId: String) = QuickerLinkTarget(
+    ipAddress = ipAddress,
+    port = port,
+    serviceActionId = serviceActionId,
+)
+
+internal fun shouldKeepLinkCapabilities(
+    verifiedTarget: QuickerLinkTarget?,
+    requestedTarget: QuickerLinkTarget,
+): Boolean = verifiedTarget == requestedTarget
+
+internal fun shouldSyncPanelActionsAfterReady(
+    explicitlyRequested: Boolean,
+    capabilities: QuickerLinkCapabilities?,
+): Boolean = explicitlyRequested || capabilities == null
+
 class QuickerViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences: QuickerPreferences = AppPreferences(application)
     private val connectionManager = QuickerConnectionManager()
@@ -395,6 +424,10 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
     private var knownGoodConnection = preferences.loadConnection()
     private val connectionSession = ConnectionSession(knownGoodConnection.toReconnectConfigOrNull())
+    private var activeLinkTarget = knownGoodConnection.toReconnectConfigOrNull()?.toLinkTarget(
+        knownGoodConnection.serviceActionId ?: QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
+    )
+    private var verifiedCapabilitiesTarget: QuickerLinkTarget? = null
     private var appInForeground = false
     private var discoveryJob: Job? = null
     private var syncPanelActionsAfterConnect = false
@@ -683,13 +716,19 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
     fun syncPanelActions() {
         val state = mutableUiState.value
+        val syncTarget = activeLinkTarget
         if (state.connectionState !is QuickerConnectionState.Ready) {
             mutableNotices.tryEmit(UiNotice.Error("请先连接 Quicker"))
             return
         }
         if (state.syncingPanelActions) return
 
-        mutableUiState.update { it.copy(syncingPanelActions = true) }
+        mutableUiState.update {
+            it.copy(
+                syncingPanelActions = true,
+                linkCapabilities = null,
+            )
+        }
         viewModelScope.launch {
             try {
                 val response = connectionManager.sendCommand(
@@ -708,12 +747,17 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
                 val catalog = QuickerPanelActionsProtocol.parse(response.data)
+                if (syncTarget != activeLinkTarget) {
+                    throw IllegalStateException("连接已切换，请重新同步")
+                }
+                verifiedCapabilitiesTarget = syncTarget
                 mutableUiState.update { current ->
                     val updated = mergePanelActions(current.savedActions, catalog)
                     preferences.saveActions(updated)
                     current.copy(
                         savedActions = updated,
                         companionActionPromptVisible = false,
+                        linkCapabilities = catalog.capabilities,
                     )
                 }
                 mutableNotices.emit(
@@ -905,13 +949,41 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             title = "获取当前屏幕",
             detail = "正在请求电脑生成快照",
         ) {
-            val result = requestToolbox(
-                command = QuickerToolboxProtocol.screenCaptureCommand(),
-                expectedOperation = QuickerToolboxProtocol.OP_SCREEN_CAPTURE,
-                logSummary = "获取电脑当前屏幕：Quicker Link",
-                timeoutMs = SCREEN_CAPTURE_TIMEOUT_MS,
-            ) as QuickerToolboxResult.Transfer
-            downloadFromComputer(result.descriptor, ToolboxTask.SCREEN, keepAsScreenPreview = true)
+            requestAndDownloadScreen("获取电脑当前屏幕：Quicker Link")
+        }
+    }
+
+    fun clickComputerScreen(captureId: String, x: Int, y: Int) {
+        val state = mutableUiState.value
+        if (state.linkCapabilities?.screenClick != true) {
+            mutableNotices.tryEmit(UiNotice.Error("请先同步最新版 Quicker Link 动作能力"))
+            return
+        }
+        if (state.screenPreview?.captureId != captureId) {
+            mutableNotices.tryEmit(UiNotice.Error("屏幕画面已失效，请刷新后重试"))
+            return
+        }
+        launchToolboxTask(
+            task = ToolboxTask.SCREEN_CLICK,
+            title = "点击电脑屏幕",
+            detail = "正在发送点击并刷新画面",
+        ) {
+            mutableUiState.update { current ->
+                current.copy(
+                    screenPreview = current.screenPreview
+                        ?.takeIf { it.captureId == captureId }
+                        ?.copy(captureId = null)
+                        ?: current.screenPreview,
+                )
+            }
+            requestToolbox(
+                command = QuickerToolboxProtocol.screenClickCommand(captureId, x, y),
+                expectedOperation = QuickerToolboxProtocol.OP_SCREEN_CLICK,
+                logSummary = "点击电脑屏幕：Quicker Link",
+            )
+            appendLog(QuickerEventDirection.INCOMING, "电脑已接收屏幕点击")
+            delay(200)
+            requestAndDownloadScreen("点击后刷新电脑屏幕：Quicker Link")
         }
     }
 
@@ -919,7 +991,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         launchToolboxTask(
             task = ToolboxTask.RECEIVE_FILE,
             title = "从电脑接收文件",
-            detail = "请在电脑上选择一个不超过 8 MiB 的文件",
+            detail = "请在电脑上选择一个不超过 64 MiB 的文件",
             canCancel = true,
         ) {
             val result = requestToolbox(
@@ -1022,7 +1094,36 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun sendText(operation: String, text: String) {
+    fun runSystemCommand(command: QuickerSystemCommand) {
+        if (mutableUiState.value.linkCapabilities?.systemControl != true) {
+            mutableNotices.tryEmit(UiNotice.Error("请先同步最新版 Quicker Link 动作能力"))
+            return
+        }
+        val label = systemCommandLabel(command)
+        launchToolboxTask(
+            task = ToolboxTask.SYSTEM_CONTROL,
+            title = label,
+            detail = "正在向电脑发送命令",
+        ) {
+            requestToolbox(
+                command = QuickerToolboxProtocol.systemCommand(command),
+                expectedOperation = QuickerToolboxProtocol.OP_SYSTEM_COMMAND,
+                logSummary = "$label：Quicker Link",
+            )
+            mutableUiState.update {
+                it.copy(
+                    toolboxStatus = ToolboxStatus.Success(
+                        ToolboxTask.SYSTEM_CONTROL,
+                        "命令已发送",
+                        label,
+                    ),
+                )
+            }
+            appendLog(QuickerEventDirection.INCOMING, "电脑已接收命令：$label")
+        }
+    }
+
+    fun pasteText(text: String) {
         if (text.isEmpty()) {
             mutableNotices.tryEmit(UiNotice.Error("请输入内容"))
             return
@@ -1034,7 +1135,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch {
             runCatching {
-                connectionManager.sendCommand(operation = operation, data = text)
+                connectionManager.sendCommand(operation = "paste", data = text)
             }.onSuccess { response ->
                 if (response.isSuccess == false) {
                     mutableNotices.emit(
@@ -1437,9 +1538,11 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         descriptor: QuickerTransferDescriptor,
         task: ToolboxTask,
         keepAsScreenPreview: Boolean,
+        captureId: String? = null,
     ) {
         if (keepAsScreenPreview) {
             require(descriptor.mime == "image/jpeg") { "电脑返回的屏幕快照类型无效" }
+            require(captureId != null) { "电脑未返回屏幕标识" }
         }
         activeTransferId = descriptor.id
         val part = withContext(Dispatchers.IO) { transferStore.createIncomingPart() }
@@ -1506,7 +1609,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 committed = true
                 finishRemoteDownloadBestEffort(descriptor.id)
                 activeTransferId = null
-                publishScreenPreview(preview)
+                publishScreenPreview(preview, requireNotNull(captureId))
             } else {
                 val saved = withContext(Dispatchers.IO) {
                     transferStore.saveToDownloads(part, descriptor.name, descriptor.mime)
@@ -1534,7 +1637,22 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private suspend fun publishScreenPreview(preview: ScreenPreview) {
+    private suspend fun requestAndDownloadScreen(logSummary: String) {
+        val result = requestToolbox(
+            command = QuickerToolboxProtocol.screenCaptureCommand(),
+            expectedOperation = QuickerToolboxProtocol.OP_SCREEN_CAPTURE,
+            logSummary = logSummary,
+            timeoutMs = SCREEN_CAPTURE_TIMEOUT_MS,
+        ) as QuickerToolboxResult.ScreenCapture
+        downloadFromComputer(
+            descriptor = result.descriptor,
+            task = ToolboxTask.SCREEN,
+            keepAsScreenPreview = true,
+            captureId = result.captureId,
+        )
+    }
+
+    private suspend fun publishScreenPreview(preview: ScreenPreview, captureId: String) {
         val previousPath = mutableUiState.value.screenPreview?.path
         val capturedAt = LocalTime.now().format(timeFormatter)
         mutableUiState.update {
@@ -1543,6 +1661,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     path = preview.file.absolutePath,
                     name = preview.name,
                     capturedAt = capturedAt,
+                    captureId = captureId,
                 ),
                 toolboxStatus = ToolboxStatus.Success(
                     ToolboxTask.SCREEN,
@@ -1619,6 +1738,11 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         mutableUiState.update { state ->
             state.copy(
                 connectionState = connectionState,
+                screenPreview = if (connectionState is QuickerConnectionState.Ready) {
+                    state.screenPreview
+                } else {
+                    state.screenPreview?.copy(captureId = null)
+                },
                 connectionError = when {
                     errorMessage != null -> errorMessage
                     connectionState is QuickerConnectionState.Connecting ||
@@ -1632,8 +1756,12 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         when (connectionState) {
             is QuickerConnectionState.Ready -> {
                 persistAuthenticatedConnection()
-                if (syncPanelActionsAfterConnect) {
-                    syncPanelActionsAfterConnect = false
+                val shouldSync = shouldSyncPanelActionsAfterReady(
+                    explicitlyRequested = syncPanelActionsAfterConnect,
+                    capabilities = mutableUiState.value.linkCapabilities,
+                )
+                syncPanelActionsAfterConnect = false
+                if (shouldSync) {
                     syncPanelActions()
                 }
             }
@@ -1665,6 +1793,18 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         rememberPassword: Boolean,
         serviceActionId: String = mutableUiState.value.catalogActionId,
     ) {
+        val requestedTarget = config.toLinkTarget(serviceActionId)
+        activeLinkTarget = requestedTarget
+        val keepCapabilities = shouldKeepLinkCapabilities(
+            verifiedTarget = verifiedCapabilitiesTarget,
+            requestedTarget = requestedTarget,
+        )
+        mutableUiState.update {
+            it.copy(
+                linkCapabilities = it.linkCapabilities.takeIf { keepCapabilities },
+                screenPreview = it.screenPreview?.copy(captureId = null),
+            )
+        }
         val connectionToPersist = StoredConnection(
             ipAddress = config.ipAddress,
             port = config.port,
@@ -1731,6 +1871,16 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             state = connectionManager.state.value,
         ) ?: return
 
+        val target = activeLinkTarget
+            ?.takeIf { it.ipAddress == config.ipAddress && it.port == config.port }
+            ?: config.toLinkTarget(
+                knownGoodConnection.serviceActionId ?: state.catalogActionId,
+            )
+        activeLinkTarget = target
+        if (!shouldKeepLinkCapabilities(verifiedCapabilitiesTarget, target)) {
+            mutableUiState.update { it.copy(linkCapabilities = null) }
+        }
+
         runCatching { connectionManager.connect(config) }
             .onFailure { error ->
                 connectionSession.connectionStartRejected()
@@ -1784,6 +1934,12 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         const val FILE_RECONNECT_TIMEOUT_MS = 20_000L
         const val REMOTE_CLEANUP_TIMEOUT_MS = 5_000L
     }
+}
+
+internal fun systemCommandLabel(command: QuickerSystemCommand): String = when (command) {
+    QuickerSystemCommand.SHUTDOWN -> "关闭电脑"
+    QuickerSystemCommand.SLEEP -> "电脑睡眠"
+    QuickerSystemCommand.RESTART_QUICKER -> "重启 Quicker"
 }
 
 private fun FileInputStream.readExactChunk(count: Int): ByteArray {

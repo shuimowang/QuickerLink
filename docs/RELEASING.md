@@ -4,7 +4,7 @@ GitHub Releases must contain only APKs signed by Quicker Link's dedicated releas
 
 ## Required GitHub environment
 
-Create a protected GitHub environment named `release`, restrict its deployers, and add these environment secrets:
+The repository uses a protected GitHub environment named `release`. It accepts only `v*` tags, requires approval from the repository owner, and disables administrator bypass. Version tags are protected against deletion and non-fast-forward updates, and immutable releases are enabled. Keep those controls active and add these environment secrets:
 
 - `ANDROID_RELEASE_KEYSTORE_BASE64`: Base64 encoding of the complete JKS or PKCS12 keystore file.
 - `ANDROID_RELEASE_KEYSTORE_PASSWORD`: Keystore password.
@@ -44,6 +44,8 @@ The tag workflow then:
 - generates and checks a SHA-256 file from the final renamed APK;
 - creates a GitHub prerelease containing only that APK and checksum; and
 - removes the decoded keystore even when an earlier step fails.
+
+All reusable GitHub Actions in the signing workflow are pinned to full commit SHAs. Review Dependabot updates before accepting a new pinned revision; do not replace those revisions with mutable major-version tags.
 
 Do not upload a local debug APK or unsigned `assembleRelease` output to a GitHub Release. Key rotation or loss requires a separately reviewed migration plan before another release is attempted.
 

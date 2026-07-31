@@ -4,10 +4,12 @@ import app.quickerlink.connection.QuickerPanelScene
 import app.quickerlink.connection.QuickerConnectionConfig
 import app.quickerlink.connection.QuickerConnectionState
 import app.quickerlink.connection.QuickerMessage
+import app.quickerlink.connection.QuickerLinkCapabilities
 import app.quickerlink.connection.QuickerPanelAction
 import app.quickerlink.connection.QuickerPanelActionCatalog
 import app.quickerlink.connection.QuickerPanelActionsProtocol
 import app.quickerlink.connection.QuickerProtocol
+import app.quickerlink.connection.QuickerSystemCommand
 import app.quickerlink.connection.UnsupportedPanelCatalogVersionException
 import app.quickerlink.data.ActionParameterChoice
 import app.quickerlink.data.SavedAction
@@ -168,12 +170,40 @@ class QuickerViewModelStateTest {
     @Test
     fun transferProgressIsStableForEmptyAndPartialFiles() {
         assertEquals(100, transferPercent(0, 0))
-        assertEquals(0, transferPercent(0, 8 * 1024 * 1024L))
-        assertEquals(50, transferPercent(4 * 1024 * 1024L, 8 * 1024 * 1024L))
-        assertEquals(100, transferPercent(8 * 1024 * 1024L, 8 * 1024 * 1024L))
+        assertEquals(0, transferPercent(0, 64 * 1024 * 1024L))
+        assertEquals(50, transferPercent(32 * 1024 * 1024L, 64 * 1024 * 1024L))
+        assertEquals(100, transferPercent(64 * 1024 * 1024L, 64 * 1024 * 1024L))
         assertEquals("0 B", formatTransferBytes(0))
         assertEquals("1.0 KiB", formatTransferBytes(1024))
-        assertEquals("8.0 MiB", formatTransferBytes(8 * 1024 * 1024L))
+        assertEquals("64.0 MiB", formatTransferBytes(64 * 1024 * 1024L))
+    }
+
+    @Test
+    fun systemControlLabelsAreExplicitAndStable() {
+        assertEquals("关闭电脑", systemCommandLabel(QuickerSystemCommand.SHUTDOWN))
+        assertEquals("电脑睡眠", systemCommandLabel(QuickerSystemCommand.SLEEP))
+        assertEquals("重启 Quicker", systemCommandLabel(QuickerSystemCommand.RESTART_QUICKER))
+    }
+
+    @Test
+    fun linkCapabilitiesRefreshOncePerConnectedTarget() {
+        val target = QuickerLinkTarget(
+            ipAddress = "192.168.1.56",
+            port = 668,
+            serviceActionId = QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
+        )
+        val capabilities = QuickerLinkCapabilities()
+
+        assertTrue(shouldSyncPanelActionsAfterReady(explicitlyRequested = false, capabilities = null))
+        assertFalse(shouldSyncPanelActionsAfterReady(explicitlyRequested = false, capabilities = capabilities))
+        assertTrue(shouldSyncPanelActionsAfterReady(explicitlyRequested = true, capabilities = capabilities))
+        assertTrue(shouldKeepLinkCapabilities(verifiedTarget = target, requestedTarget = target))
+        assertFalse(
+            shouldKeepLinkCapabilities(
+                verifiedTarget = target,
+                requestedTarget = target.copy(ipAddress = "192.168.1.57"),
+            ),
+        )
     }
 
     @Test
