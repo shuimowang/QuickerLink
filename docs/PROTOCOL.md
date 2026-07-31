@@ -23,13 +23,19 @@ The companion action provides a narrowly scoped catalog of the global and common
 
 The Android client applies strict size, identity, grouping, ordering, and error-envelope validation before replacing synchronized entries. Existing manual entries and phone-side confirmation or parameter settings remain local. The app and companion action must use the same current catalog generation; older catalog responses are rejected, and no synchronized entry is changed unless the complete response passes validation.
 
+The current catalog explicitly declares whether synchronized actions can be stopped. A stop request is limited to a validated synchronized action identity, is sent only after an explicit menu command, and is reported as successful only after Quicker confirms that no running instance remains. Control responses are compact and never include action source or catalog data.
+
 This catalog filter limits what Quicker Link displays. It does not change the permission boundary of Quicker's authenticated WebSocket service, so the connection should remain limited to a trusted LAN and protected by a verification code.
 
 ## Compatibility policy
 
 - Incoming responses are correlated to the request that created them and are bounded by local timeouts.
 - Unknown or unsupported input is not executed implicitly.
-- Binary payloads, file transfer, image transfer, and other unverified operations are intentionally outside the current feature set.
+- One-shot screen capture, clipboard text, and single-file transfer are available only through the current companion-action generation and an authenticated foreground session.
+- Files are limited to 8 MiB and transferred as ordered 64 KiB chunks with per-chunk and whole-file SHA-256 validation. Both sides stage incomplete data in `.part` files and publish it only after final validation.
+- The Android client runs one toolbox task at a time, exposes cancellation, and never resumes or replays a side-effecting chunk automatically after reconnect.
+- Final upload commit is idempotent for one transfer identity. Cancellation is disabled during commit; an ambiguous response can be queried again without publishing a second file.
+- Phone-to-computer files are confined to the user's `Downloads / Quicker Link` directory. Computer-to-phone selection requires an explicit desktop file-picker choice; the phone is not given a directory-listing operation.
 - Disconnects fail pending work, then reconnect through a fresh secure authentication flow when the user has chosen to save the connection.
 
 The implementation may evolve as Quicker changes. Security-sensitive behavior is covered by focused tests and should be reviewed from the exact tagged source corresponding to a published APK.

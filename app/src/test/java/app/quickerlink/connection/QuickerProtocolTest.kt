@@ -4,6 +4,7 @@ import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -68,5 +69,18 @@ class QuickerProtocolTest {
 
         assertEquals(7, message.data?.asJsonObject?.get("value")?.asInt)
         assertEquals("{\"value\":7}", QuickerProtocol.displayData(message.data))
+    }
+
+    @Test
+    fun `rejects duplicate fields including case variants`() {
+        listOf(
+            """{"messageType":4,"messageType":6}""",
+            """{"messageType":4,"MessageType":6}""",
+            """{"messageType":4,"data":{"value":1,"value":2}}""",
+        ).forEach { payload ->
+            assertThrows(IllegalArgumentException::class.java) {
+                QuickerProtocol.parse(payload)
+            }
+        }
     }
 }

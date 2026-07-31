@@ -56,7 +56,11 @@ enum class QuickerEventDirection {
 data class QuickerConnectionEvent(
     val direction: QuickerEventDirection,
     val summary: String,
-    val message: QuickerMessage? = null,
+)
+
+private data class PendingCommand(
+    val response: CompletableDeferred<QuickerMessage>,
+    val logResponse: Boolean,
 )
 
 class QuickerIncomingCommand internal constructor(
@@ -96,7 +100,7 @@ class QuickerConnectionManager private constructor(
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private val generation = AtomicLong(0)
     private val serial = AtomicLong(1)
-    private val pending = mutableMapOf<Long, CompletableDeferred<QuickerMessage>>()
+    private val pending = mutableMapOf<Long, PendingCommand>()
     private val lock = Any()
 
     private val mutableState = MutableStateFlow<QuickerConnectionState>(QuickerConnectionState.Disconnected)
@@ -160,6 +164,9 @@ class QuickerConnectionManager private constructor(
         data: String? = null,
         action: String? = null,
         timeoutMs: Long = DEFAULT_COMMAND_TIMEOUT_MS,
+        logSummary: String? = null,
+        logRequest: Boolean = true,
+        logResponse: Boolean = true,
     ): QuickerMessage {
         require(operation.isNotBlank()) { "操作类型不能为空" }
         val requestSerial = nextSerial()
@@ -177,7 +184,7 @@ class QuickerConnectionManager private constructor(
             val currentSocket = socket
             check(readyGeneration == token && currentSocket != null) { "尚未连接到 Quicker" }
 
-            pending[requestSerial] = deferred
+            pending[requestSerial] = PendingCommand(deferred, logResponse)
             if (currentSocket.send(payload)) {
                 true
             } else {
@@ -189,12 +196,21 @@ class QuickerConnectionManager private constructor(
             throw IllegalStateException("消息未能加入发送队列")
         }
 
-        mutableEvents.tryEmit(
-            QuickerConnectionEvent(
-                direction = QuickerEventDirection.OUTGOING,
-                summary = if (operation == "action") "执行动作：${action.orEmpty()}" else "发送操作：$operation",
-            ),
-        )
+        if (logRequest) {
+            mutableEvents.tryEmit(
+                QuickerConnectionEvent(
+                    direction = QuickerEventDirection.OUTGOING,
+                    summary = compactLogText(
+                        logSummary
+                            ?: if (operation == "action") {
+                                "执行动作：${action.orEmpty()}"
+                            } else {
+                                "发送操作：$operation"
+                            },
+                    ),
+                ),
+            )
+        }
 
         return try {
             withTimeout(timeoutMs) { deferred.await() }
@@ -207,6 +223,7 @@ class QuickerConnectionManager private constructor(
         operation: String,
         data: String? = null,
         action: String? = null,
+        logSummary: String? = null,
     ) {
         require(operation.isNotBlank()) { "操作类型不能为空" }
         val payload = QuickerProtocol.commandRequest(
@@ -230,7 +247,14 @@ class QuickerConnectionManager private constructor(
         mutableEvents.tryEmit(
             QuickerConnectionEvent(
                 direction = QuickerEventDirection.OUTGOING,
-                summary = if (operation == "action") "发送动作：${action.orEmpty()}" else "发送操作：$operation",
+                summary = compactLogText(
+                    logSummary
+                        ?: if (operation == "action") {
+                            "发送动作：${action.orEmpty()}"
+                        } else {
+                            "发送操作：$operation"
+                        },
+                ),
             ),
         )
     }
@@ -398,14 +422,15 @@ class QuickerConnectionManager private constructor(
                         emitIgnoredBeforeReady(message.messageType)
                         return
                     }
-                    request?.complete(message)
-                    mutableEvents.tryEmit(
-                        QuickerConnectionEvent(
-                            QuickerEventDirection.INCOMING,
-                            responseSummary(message),
-                            message,
-                        ),
-                    )
+                    request?.response?.complete(message)
+                    if (request?.logResponse == true) {
+                        mutableEvents.tryEmit(
+                            QuickerConnectionEvent(
+                                QuickerEventDirection.INCOMING,
+                                responseSummary(message),
+                            ),
+                        )
+                    }
                 }
 
                 QuickerProtocol.MESSAGE_COMMAND -> {
@@ -438,7 +463,6 @@ class QuickerConnectionManager private constructor(
                     QuickerConnectionEvent(
                         QuickerEventDirection.INCOMING,
                         "收到消息类型 ${message.messageType}",
-                        message,
                     ),
                 )
             }
@@ -593,16 +617,18 @@ class QuickerConnectionManager private constructor(
     }
 
     private fun responseSummary(message: QuickerMessage): String {
-        val content = QuickerProtocol.displayData(message.data)
         return if (message.isSuccess == false) {
-            "操作失败：${message.message ?: content ?: "未知错误"}"
+            val detail = message.message
+                ?: QuickerProtocol.displayData(message.data)
+                ?: "未知错误"
+            "操作失败：${compactLogText(detail)}"
         } else {
-            content?.takeIf(String::isNotBlank)?.let { "操作成功：$it" } ?: "操作成功"
+            "操作成功"
         }
     }
 
     private fun drainPendingLocked(): List<CompletableDeferred<QuickerMessage>> =
-        pending.values.toList().also { pending.clear() }
+        pending.values.map(PendingCommand::response).also { pending.clear() }
 
     private fun discardQueuedCommandsLocked() {
         while (incomingCommands.tryReceive().isSuccess) {
@@ -665,4 +691,13 @@ class QuickerConnectionManager private constructor(
             .dns(QuickerLanDns)
             .build()
     }
+}
+
+internal fun compactLogText(value: String, maxLength: Int = 180): String {
+    require(maxLength >= 4)
+    val compact = value
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .ifEmpty { "无详细信息" }
+    return if (compact.length <= maxLength) compact else compact.take(maxLength - 3) + "..."
 }

@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.3.0-alpha.1] - 2026-07-31
+
+### Added
+
+- Stop a synchronized action from its overflow menu through the current Quicker Link companion action
+- Add a dedicated transfer workspace for one-shot screen capture, two-way clipboard text, and two-way small-file transfer
+- Transfer files in strict 64 KiB chunks with per-chunk and whole-file SHA-256 verification, cancellable progress, and temporary `.part` staging
+- Save received files and screen captures through Android's Downloads collection under `Quicker Link`
+- Reject duplicate JSON fields throughout the authenticated connection and companion-action response parsers
+
+### Changed
+
+- Replace vertically stacked action groups with a sticky horizontal group navigator that returns to the group start when switched
+- Preserve the action search, selected group, and grid position while switching between bottom navigation destinations
+- Record action names together with targets and keep successful connection records to concise summaries instead of catalog payloads
+- Upgrade the strict global/common catalog, action-control, and transfer contract to v6
+- Confirm that a stopped action has no remaining running instance before reporting success
+- Wait for the saved WSS connection to recover after Android's document picker temporarily backgrounds the app
+- Raise the minimum supported platform to Android 10 so all received files use the public Downloads collection
+- Make final upload confirmation idempotently retryable and disable cancellation while either side is publishing a verified file
+
 ## [0.2.0-alpha.5] - 2026-07-31
 
 ### Added

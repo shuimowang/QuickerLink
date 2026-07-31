@@ -3,8 +3,11 @@ package app.quickerlink.ui
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -18,14 +21,17 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -37,7 +43,9 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
@@ -51,7 +59,10 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.StopCircle
+import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.Wifi
@@ -68,15 +79,18 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SecondaryScrollableTabRow
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -84,6 +98,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -94,11 +109,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -114,11 +132,14 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.quickerlink.EventLog
 import app.quickerlink.QuickerUiState
 import app.quickerlink.QuickerDiscoveryState
 import app.quickerlink.QuickerViewModel
+import app.quickerlink.ToolboxStatus
 import app.quickerlink.UiNotice
 import app.quickerlink.connection.QuickerConnectionState
 import app.quickerlink.connection.QuickerEndpoint
@@ -126,10 +147,13 @@ import app.quickerlink.connection.QuickerEventDirection
 import app.quickerlink.data.SavedAction
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 private enum class MainDestination(val label: String, val icon: ImageVector) {
     ACTIONS("动作", Icons.Outlined.Bolt),
+    TRANSFER("传输", Icons.Outlined.SwapHoriz),
     CONNECTION("连接", Icons.Outlined.Settings),
     ABOUT("关于", Icons.Outlined.Info),
 }
@@ -144,9 +168,11 @@ fun QuickerApp(
     onRequestCameraPermission: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onOpenExternalUrl: (String) -> Unit,
+    onChooseFile: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val actionsStateHolder = rememberSaveableStateHolder()
     var destination by rememberSaveable { mutableStateOf(MainDestination.ACTIONS) }
     var editedAction by remember { mutableStateOf<SavedAction?>(null) }
     var showActionEditor by remember { mutableStateOf(false) }
@@ -208,18 +234,39 @@ fun QuickerApp(
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
         when (destination) {
-            MainDestination.ACTIONS -> ActionsScreen(
-                state = state,
-                contentPadding = innerPadding,
-                onOpenConnection = { destination = MainDestination.CONNECTION },
-                onSyncPanelActions = viewModel::syncPanelActions,
-                onRun = viewModel::runAction,
-                onEdit = { action ->
-                    editedAction = action
-                    showActionEditor = true
-                },
-                onDelete = viewModel::deleteAction,
-            )
+            MainDestination.ACTIONS -> actionsStateHolder.SaveableStateProvider(ACTIONS_SCREEN_STATE_KEY) {
+                ActionsScreen(
+                    state = state,
+                    contentPadding = innerPadding,
+                    onOpenConnection = { destination = MainDestination.CONNECTION },
+                    onSyncPanelActions = viewModel::syncPanelActions,
+                    onRun = viewModel::runAction,
+                    onStop = viewModel::stopAction,
+                    onEdit = { action ->
+                        editedAction = action
+                        showActionEditor = true
+                    },
+                    onDelete = viewModel::deleteAction,
+                )
+            }
+
+            MainDestination.TRANSFER -> actionsStateHolder.SaveableStateProvider(TRANSFER_SCREEN_STATE_KEY) {
+                TransferScreen(
+                    state = state,
+                    contentPadding = innerPadding,
+                    onOpenConnection = { destination = MainDestination.CONNECTION },
+                    onTextChanged = viewModel::updateToolboxText,
+                    onReadClipboard = viewModel::readComputerClipboard,
+                    onSendText = viewModel::sendToolboxText,
+                    onCaptureScreen = viewModel::captureComputerScreen,
+                    onSaveScreen = viewModel::saveScreenToDownloads,
+                    onChooseFile = onChooseFile,
+                    onReceiveFile = viewModel::receiveFileFromComputer,
+                    onCancel = viewModel::cancelToolboxTransfer,
+                    onRetry = viewModel::retryUploadConfirmation,
+                    onClearStatus = viewModel::clearToolboxStatus,
+                )
+            }
 
             MainDestination.CONNECTION -> ConnectionScreen(
                 state = state,
@@ -375,16 +422,30 @@ private fun ActionsScreen(
     onOpenConnection: () -> Unit,
     onSyncPanelActions: () -> Unit,
     onRun: (SavedAction) -> Unit,
+    onStop: (SavedAction) -> Unit,
     onEdit: (SavedAction) -> Unit,
     onDelete: (SavedAction) -> Unit,
 ) {
     var pendingConfirmation by remember { mutableStateOf<SavedAction?>(null) }
     var pendingDelete by remember { mutableStateOf<SavedAction?>(null) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
-    val actionSections = remember(state.savedActions, searchQuery) {
-        buildActionListSections(state.savedActions, searchQuery)
+    var selectedSectionKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val gridState = rememberLazyGridState()
+    val coroutineScope = rememberCoroutineScope()
+    val actionSections = remember(state.savedActions) {
+        buildActionListSections(state.savedActions, query = "")
     }
-    val visibleActionCount = actionSections.sumOf { it.actions.size }
+    val selectedSectionIndex = resolveActionSectionIndex(actionSections, selectedSectionKey)
+    val selectedSection = actionSections.getOrNull(selectedSectionIndex)
+    val visibleActions = remember(state.savedActions, selectedSection?.key, searchQuery) {
+        visibleActionsForSection(state.savedActions, selectedSection?.key, searchQuery)
+    }
+
+    LaunchedEffect(actionSections.map(ActionListSection::key), selectedSection?.key) {
+        if (selectedSectionKey != selectedSection?.key) {
+            selectedSectionKey = selectedSection?.key
+        }
+    }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val columnCount = when {
@@ -394,12 +455,18 @@ private fun ActionsScreen(
         }
         LazyVerticalGrid(
             columns = GridCells.Fixed(columnCount),
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(
+                    top = contentPadding.calculateTopPadding(),
+                    bottom = contentPadding.calculateBottomPadding(),
+                ),
+            state = gridState,
             contentPadding = PaddingValues(
                 start = 12.dp,
-                top = contentPadding.calculateTopPadding() + 8.dp,
+                top = 8.dp,
                 end = 12.dp,
-                bottom = contentPadding.calculateBottomPadding() + 88.dp,
+                bottom = 88.dp,
             ),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -426,37 +493,49 @@ private fun ActionsScreen(
             } else {
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     ActionLibraryHeader(
-                        totalCount = state.savedActions.size,
-                        visibleCount = visibleActionCount,
+                        totalCount = selectedSection?.actions?.size ?: 0,
+                        visibleCount = visibleActions.size,
                         query = searchQuery,
                         onQueryChange = { searchQuery = it },
                     )
                 }
 
-                if (actionSections.isEmpty()) {
+                stickyHeader(key = "action-section-navigation") {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.surface,
+                        shadowElevation = 2.dp,
+                    ) {
+                        ActionSectionNavigation(
+                            sections = actionSections,
+                            selectedIndex = selectedSectionIndex,
+                            onSelected = { index ->
+                                selectedSectionKey = actionSections[index].key
+                                coroutineScope.launch {
+                                    gridState.animateScrollToItem(ACTION_NAVIGATION_GRID_INDEX)
+                                }
+                            },
+                        )
+                    }
+                }
+
+                if (visibleActions.isEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         EmptySearchResults(onClear = { searchQuery = "" })
                     }
                 } else {
-                    actionSections.forEach { section ->
-                        item(
-                            key = "section:${section.key}",
-                            span = { GridItemSpan(maxLineSpan) },
-                        ) {
-                            ActionGroupHeader(section.title, section.actions.size)
-                        }
-                        gridItems(section.actions, key = SavedAction::id) { action ->
-                            SavedActionTile(
-                                action = action,
-                                enabled = state.connectionState is QuickerConnectionState.Ready,
-                                running = action.id in state.runningActionIds,
-                                onRun = {
-                                    if (action.confirmBeforeRun) pendingConfirmation = action else onRun(action)
-                                },
-                                onEdit = { onEdit(action) },
-                                onDelete = { pendingDelete = action },
-                            )
-                        }
+                    gridItems(visibleActions, key = SavedAction::id) { action ->
+                        SavedActionTile(
+                            action = action,
+                            enabled = state.connectionState is QuickerConnectionState.Ready,
+                            running = action.id in state.runningActionIds,
+                            onRun = {
+                                if (action.confirmBeforeRun) pendingConfirmation = action else onRun(action)
+                            },
+                            onStop = { onStop(action) },
+                            onEdit = { onEdit(action) },
+                            onDelete = { pendingDelete = action },
+                        )
                     }
                 }
             }
@@ -654,7 +733,7 @@ private fun ActionLibraryHeader(
             value = query,
             onValueChange = onQueryChange,
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("搜索动作") },
+            label = { Text("搜索当前分组") },
             leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
             trailingIcon = if (query.isNotEmpty()) {
                 {
@@ -672,27 +751,32 @@ private fun ActionLibraryHeader(
 }
 
 @Composable
-private fun ActionGroupHeader(title: String, count: Int) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 4.dp, top = 8.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun ActionSectionNavigation(
+    sections: List<ActionListSection>,
+    selectedIndex: Int,
+    onSelected: (Int) -> Unit,
+) {
+    SecondaryScrollableTabRow(
+        selectedTabIndex = selectedIndex,
+        modifier = Modifier.fillMaxWidth(),
+        edgePadding = 0.dp,
+        containerColor = MaterialTheme.colorScheme.surface,
+        divider = {},
     ) {
-        Text(
-            title,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            count.toString(),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        sections.forEachIndexed { index, section ->
+            Tab(
+                selected = index == selectedIndex,
+                onClick = { onSelected(index) },
+                text = {
+                    Text(
+                        "${section.title}  ${section.actions.size}",
+                        modifier = Modifier.widthIn(max = 180.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+            )
+        }
     }
 }
 
@@ -712,7 +796,7 @@ private fun EmptySearchResults(onClear: () -> Unit) {
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(10.dp))
-        Text("没有匹配的动作", style = MaterialTheme.typography.titleMedium)
+        Text("当前分组没有匹配的动作", style = MaterialTheme.typography.titleMedium)
         TextButton(onClick = onClear) { Text("清除搜索") }
     }
 }
@@ -723,6 +807,7 @@ private fun SavedActionTile(
     enabled: Boolean,
     running: Boolean,
     onRun: () -> Unit,
+    onStop: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -804,6 +889,15 @@ private fun SavedActionTile(
                                 onClick = {
                                     menuExpanded = false
                                     onEdit()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("终止动作") },
+                                leadingIcon = { Icon(Icons.Outlined.StopCircle, contentDescription = null) },
+                                enabled = enabled && !running,
+                                onClick = {
+                                    menuExpanded = false
+                                    onStop()
                                 },
                             )
                         } else {
@@ -920,6 +1014,357 @@ private fun decodeActionIcon(encoded: String): Bitmap? {
 
 private const val PNG_ICON_PREFIX = "data:image/png;base64,"
 private const val QUICKER_ICON_URL_PREFIX = "https://files.getquicker.net/"
+private const val ACTION_NAVIGATION_GRID_INDEX = 2
+private const val ACTIONS_SCREEN_STATE_KEY = "actions-screen"
+private const val TRANSFER_SCREEN_STATE_KEY = "transfer-screen"
+
+@Composable
+private fun TransferScreen(
+    state: QuickerUiState,
+    contentPadding: PaddingValues,
+    onOpenConnection: () -> Unit,
+    onTextChanged: (String) -> Unit,
+    onReadClipboard: () -> Unit,
+    onSendText: () -> Unit,
+    onCaptureScreen: () -> Unit,
+    onSaveScreen: () -> Unit,
+    onChooseFile: () -> Unit,
+    onReceiveFile: () -> Unit,
+    onCancel: () -> Unit,
+    onRetry: () -> Unit,
+    onClearStatus: () -> Unit,
+) {
+    val connected = state.connectionState is QuickerConnectionState.Ready
+    val controlsLocked = state.toolboxStatus is ToolboxStatus.Working ||
+        (state.toolboxStatus as? ToolboxStatus.Failed)?.canRetry == true
+    var showScreenPreview by rememberSaveable { mutableStateOf(false) }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(
+                top = contentPadding.calculateTopPadding(),
+                bottom = contentPadding.calculateBottomPadding(),
+            ),
+        contentPadding = PaddingValues(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ConnectionStateGraphic(state.connectionState, Modifier.size(22.dp))
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        if (connected) "局域网已连接" else "尚未连接电脑",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        (state.connectionState as? QuickerConnectionState.Ready)?.endpoint
+                            ?: "需要连接 Quicker",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (!connected) {
+                    TextButton(onClick = onOpenConnection) {
+                        Icon(Icons.Outlined.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("连接")
+                    }
+                }
+            }
+            HorizontalDivider(modifier = Modifier.padding(top = 12.dp))
+        }
+
+        if (state.toolboxStatus !is ToolboxStatus.Idle) {
+            item {
+                ToolboxStatusBanner(
+                    status = state.toolboxStatus,
+                    onCancel = onCancel,
+                    onRetry = onRetry,
+                    retryEnabled = connected,
+                    onClear = onClearStatus,
+                )
+            }
+        }
+
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "当前屏幕",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    IconButton(
+                        onClick = onCaptureScreen,
+                        enabled = connected && !controlsLocked,
+                    ) {
+                        Icon(Icons.Outlined.Sync, contentDescription = "刷新电脑屏幕")
+                    }
+                    IconButton(
+                        onClick = onSaveScreen,
+                        enabled = state.screenPreview != null && !controlsLocked,
+                    ) {
+                        Icon(Icons.Outlined.Download, contentDescription = "保存屏幕快照")
+                    }
+                }
+
+                val preview = state.screenPreview
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .clickable(
+                            enabled = preview != null || connected && !controlsLocked,
+                            onClick = {
+                                if (preview == null) onCaptureScreen() else showScreenPreview = true
+                            },
+                        ),
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    if (preview == null) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    Icons.Outlined.Visibility,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(34.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "点击获取电脑当前屏幕",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    } else {
+                        AsyncImage(
+                            model = File(preview.path),
+                            contentDescription = "电脑当前屏幕，${preview.capturedAt}",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit,
+                        )
+                    }
+                }
+            }
+            HorizontalDivider(modifier = Modifier.padding(top = 18.dp))
+        }
+
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "文本",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                OutlinedTextField(
+                    value = state.toolboxText,
+                    onValueChange = onTextChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("文本内容") },
+                    minLines = 3,
+                    maxLines = 7,
+                    enabled = !controlsLocked,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onReadClipboard,
+                        enabled = connected && !controlsLocked,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Outlined.ContentPaste, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("读取电脑")
+                    }
+                    Button(
+                        onClick = onSendText,
+                        enabled = connected && !controlsLocked && state.toolboxText.isNotEmpty(),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("发送到电脑")
+                    }
+                }
+            }
+            HorizontalDivider(modifier = Modifier.padding(top = 18.dp))
+        }
+
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "文件",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "单个文件不超过 8 MiB",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    FilledTonalButton(
+                        onClick = onChooseFile,
+                        enabled = connected && !controlsLocked,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Outlined.UploadFile, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("发送文件")
+                    }
+                    FilledTonalButton(
+                        onClick = onReceiveFile,
+                        enabled = connected && !controlsLocked,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Outlined.Download, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("接收文件")
+                    }
+                }
+            }
+        }
+    }
+
+    if (showScreenPreview) {
+        state.screenPreview?.let { preview ->
+            Dialog(
+                onDismissRequest = { showScreenPreview = false },
+                properties = DialogProperties(
+                    usePlatformDefaultWidth = false,
+                ),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    AsyncImage(
+                        model = File(preview.path),
+                        contentDescription = "电脑当前屏幕",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit,
+                    )
+                    IconButton(
+                        onClick = { showScreenPreview = false },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(18.dp)
+                            .background(Color.Black.copy(alpha = 0.58f), CircleShape),
+                    ) {
+                        Icon(Icons.Outlined.Close, contentDescription = "关闭预览", tint = Color.White)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolboxStatusBanner(
+    status: ToolboxStatus,
+    onCancel: () -> Unit,
+    onRetry: () -> Unit,
+    retryEnabled: Boolean,
+    onClear: () -> Unit,
+) {
+    val containerColor = when (status) {
+        is ToolboxStatus.Failed -> MaterialTheme.colorScheme.errorContainer
+        is ToolboxStatus.Success -> MaterialTheme.colorScheme.primaryContainer
+        is ToolboxStatus.Working -> MaterialTheme.colorScheme.secondaryContainer
+        ToolboxStatus.Idle -> Color.Transparent
+    }
+    val title = when (status) {
+        is ToolboxStatus.Failed -> status.title
+        is ToolboxStatus.Success -> status.title
+        is ToolboxStatus.Working -> status.title
+        ToolboxStatus.Idle -> ""
+    }
+    val detail = when (status) {
+        is ToolboxStatus.Failed -> status.message
+        is ToolboxStatus.Success -> status.detail
+        is ToolboxStatus.Working -> status.detail
+        ToolboxStatus.Idle -> ""
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(6.dp),
+        color = containerColor,
+    ) {
+        Column(modifier = Modifier.padding(start = 14.dp, top = 11.dp, end = 8.dp, bottom = 11.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                when (status) {
+                    is ToolboxStatus.Working -> if (status.canCancel) {
+                        IconButton(onClick = onCancel) {
+                            Icon(Icons.Outlined.Close, contentDescription = "取消传输")
+                        }
+                    }
+                    is ToolboxStatus.Failed,
+                    is ToolboxStatus.Success,
+                    -> {
+                        if (status is ToolboxStatus.Failed && status.canRetry) {
+                            IconButton(onClick = onRetry, enabled = retryEnabled) {
+                                Icon(Icons.Outlined.Sync, contentDescription = "重新确认保存结果")
+                            }
+                        }
+                        IconButton(onClick = onClear) {
+                            Icon(Icons.Outlined.Close, contentDescription = "关闭状态")
+                        }
+                    }
+                    ToolboxStatus.Idle -> Unit
+                }
+            }
+            if (status is ToolboxStatus.Working) {
+                Spacer(Modifier.height(8.dp))
+                if (status.percent == null) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(
+                        progress = { status.percent / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun ConnectionScreen(
@@ -1440,7 +1885,14 @@ private fun EventLogRow(log: EventLog) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.width(62.dp),
         )
-        Text(log.text, style = MaterialTheme.typography.bodySmall, color = color, modifier = Modifier.weight(1f))
+        Text(
+            log.text,
+            style = MaterialTheme.typography.bodySmall,
+            color = color,
+            modifier = Modifier.weight(1f),
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

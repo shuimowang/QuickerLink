@@ -68,6 +68,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val filePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        uri?.let(viewModel::sendFileToComputer)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -91,6 +97,7 @@ class MainActivity : ComponentActivity() {
                     onRequestCameraPermission = ::requestCameraPermission,
                     onOpenAppSettings = ::openAppSettings,
                     onOpenExternalUrl = ::openExternalUrl,
+                    onChooseFile = ::chooseFile,
                 )
             }
         }
@@ -126,6 +133,10 @@ class MainActivity : ComponentActivity() {
 
     private fun requestCameraPermission() {
         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    private fun chooseFile() {
+        filePickerLauncher.launch(arrayOf("*/*"))
     }
 
     private fun openAppSettings() {

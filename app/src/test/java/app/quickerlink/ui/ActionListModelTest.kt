@@ -82,6 +82,38 @@ class ActionListModelTest {
         assertEquals(2, sections.map(ActionListSection::key).distinct().size)
     }
 
+    @Test
+    fun `removed selected section falls back to first navigation item`() {
+        val sections = buildActionListSections(
+            listOf(
+                synced("全局动作", "常用"),
+                synced("通用动作", "默认", QuickerPanelActionsProtocol.COMMON_SCENE),
+            ),
+            query = "",
+        )
+
+        assertEquals(1, resolveActionSectionIndex(sections, sections.last().key))
+        assertEquals(0, resolveActionSectionIndex(sections.dropLast(1), sections.last().key))
+    }
+
+    @Test
+    fun `search is scoped to selected navigation section`() {
+        val actions = listOf(
+            synced("截图", "常用"),
+            synced("截图设置", "工具", QuickerPanelActionsProtocol.COMMON_SCENE),
+        )
+        val sections = buildActionListSections(actions, query = "")
+
+        assertEquals(
+            listOf("截图"),
+            visibleActionsForSection(actions, sections.first().key, "截图").map(SavedAction::label),
+        )
+        assertEquals(
+            emptyList<String>(),
+            visibleActionsForSection(actions, sections.first().key, "设置").map(SavedAction::label),
+        )
+    }
+
     private fun synced(
         label: String,
         group: String?,

@@ -4,7 +4,6 @@ import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonNull
 import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 
 data class QuickerMessage(
     val messageType: Int,
@@ -70,7 +69,7 @@ object QuickerProtocol {
     )
 
     fun parse(text: String): QuickerMessage {
-        val root = JsonParser.parseString(text)
+        val root = StrictJsonParser.parse(text)
         require(root.isJsonObject) { "消息不是 JSON 对象" }
         val json = root.asJsonObject
         val messageType = json.find("messageType")?.asIntOrNull()
@@ -98,9 +97,11 @@ object QuickerProtocol {
 
     private fun encode(json: JsonObject): String = gson.toJson(json)
 
-    private fun JsonObject.find(name: String): JsonElement? = entrySet()
-        .firstOrNull { (key, _) -> key.equals(name, ignoreCase = true) }
-        ?.value
+    private fun JsonObject.find(name: String): JsonElement? {
+        val matches = entrySet().filter { (key, _) -> key.equals(name, ignoreCase = true) }
+        require(matches.size <= 1) { "消息包含重复字段 $name" }
+        return matches.firstOrNull()?.value
+    }
 
     private fun JsonElement.unlessNull(): JsonElement? = takeUnless { it is JsonNull || it.isJsonNull }
 

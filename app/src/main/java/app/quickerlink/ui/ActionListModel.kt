@@ -37,6 +37,20 @@ internal fun buildActionListSections(
     }
 }
 
+internal fun resolveActionSectionIndex(
+    sections: List<ActionListSection>,
+    selectedKey: String?,
+): Int = sections.indexOfFirst { it.key == selectedKey }.takeIf { it >= 0 } ?: 0
+
+internal fun visibleActionsForSection(
+    actions: List<SavedAction>,
+    selectedKey: String?,
+    query: String,
+): List<SavedAction> = buildActionListSections(actions, query)
+    .firstOrNull { it.key == selectedKey }
+    ?.actions
+    .orEmpty()
+
 internal fun SavedAction.syncedSceneLabel(): String = when (sourceScene) {
     null, QuickerPanelActionsProtocol.GLOBAL_SCENE -> "全局"
 

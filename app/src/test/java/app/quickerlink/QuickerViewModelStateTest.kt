@@ -3,14 +3,17 @@ package app.quickerlink
 import app.quickerlink.connection.QuickerPanelScene
 import app.quickerlink.connection.QuickerConnectionConfig
 import app.quickerlink.connection.QuickerConnectionState
+import app.quickerlink.connection.QuickerMessage
 import app.quickerlink.connection.QuickerPanelAction
 import app.quickerlink.connection.QuickerPanelActionCatalog
 import app.quickerlink.connection.QuickerPanelActionsProtocol
+import app.quickerlink.connection.QuickerProtocol
 import app.quickerlink.connection.UnsupportedPanelCatalogVersionException
 import app.quickerlink.data.ActionParameterChoice
 import app.quickerlink.data.SavedAction
 import app.quickerlink.data.StoredConnection
 import app.quickerlink.update.UpdateFailure
+import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -133,6 +136,57 @@ class QuickerViewModelStateTest {
         assertEquals("Quicker Link 动作版本过旧，请更新后重试", outdated.message)
         assertFalse(network.showCompanionActionPrompt)
         assertEquals("等待响应超时", network.message)
+    }
+
+    @Test
+    fun webSocketFailureMessagesAreBoundedAndNeverSerializeResponseData() {
+        val response = QuickerMessage(
+            messageType = QuickerProtocol.MESSAGE_RESPONSE,
+            isSuccess = false,
+            data = JsonParser.parseString(
+                """{"catalog":"${"private-action-data".repeat(200)}"}""",
+            ),
+            raw = "response",
+        )
+
+        assertEquals(
+            "Quicker 拒绝终止动作",
+            webSocketCommandFailureMessage(response, "Quicker 拒绝终止动作"),
+        )
+
+        val bounded = webSocketCommandFailureMessage(
+            response.copy(message = "  第一行\r\n第二行 ${"x".repeat(500)}  "),
+            "终止动作失败",
+        )
+        assertEquals(180, bounded.length)
+        assertFalse(bounded.contains('\r'))
+        assertFalse(bounded.contains('\n'))
+        assertTrue(bounded.startsWith("第一行 第二行 "))
+        assertFalse(bounded.contains("private-action-data"))
+    }
+
+    @Test
+    fun transferProgressIsStableForEmptyAndPartialFiles() {
+        assertEquals(100, transferPercent(0, 0))
+        assertEquals(0, transferPercent(0, 8 * 1024 * 1024L))
+        assertEquals(50, transferPercent(4 * 1024 * 1024L, 8 * 1024 * 1024L))
+        assertEquals(100, transferPercent(8 * 1024 * 1024L, 8 * 1024 * 1024L))
+        assertEquals("0 B", formatTransferBytes(0))
+        assertEquals("1.0 KiB", formatTransferBytes(1024))
+        assertEquals("8.0 MiB", formatTransferBytes(8 * 1024 * 1024L))
+    }
+
+    @Test
+    fun panelSyncNetworkErrorsAreBoundedBeforeReachingUiState() {
+        val failure = classifyPanelSyncFailure(
+            IOException("  网络失败\r\n${"detail".repeat(100)}  "),
+        )
+
+        assertFalse(failure.showCompanionActionPrompt)
+        assertEquals(180, failure.message.length)
+        assertFalse(failure.message.contains('\r'))
+        assertFalse(failure.message.contains('\n'))
+        assertTrue(failure.message.startsWith("网络失败 "))
     }
 
     @Test

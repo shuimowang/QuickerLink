@@ -10,23 +10,35 @@ import androidx.lifecycle.viewModelScope
 import app.quickerlink.connection.QuickerConnectionConfig
 import app.quickerlink.connection.QuickerConnectionManager
 import app.quickerlink.connection.QuickerConnectionState
+import app.quickerlink.connection.QuickerActionControlProtocol
 import app.quickerlink.connection.AndroidIpv4SubnetProvider
 import app.quickerlink.connection.QuickerEndpoint
 import app.quickerlink.connection.QuickerEventDirection
 import app.quickerlink.connection.QuickerIncomingCommand
 import app.quickerlink.connection.QuickerDiscoveryRequest
 import app.quickerlink.connection.QuickerLanDiscovery
+import app.quickerlink.connection.QuickerMessage
 import app.quickerlink.connection.QuickerPairingCode
 import app.quickerlink.connection.QuickerProtocol
 import app.quickerlink.connection.QuickerPanelActionCatalog
 import app.quickerlink.connection.QuickerPanelActionsProtocol
+import app.quickerlink.connection.QuickerToolboxProtocol
+import app.quickerlink.connection.QuickerToolboxRemoteException
+import app.quickerlink.connection.QuickerToolboxResult
+import app.quickerlink.connection.QuickerTransferDescriptor
 import app.quickerlink.connection.UnsupportedPanelCatalogVersionException
+import app.quickerlink.connection.UnsupportedActionControlVersionException
+import app.quickerlink.connection.UnsupportedToolboxVersionException
+import app.quickerlink.connection.compactLogText
 import app.quickerlink.connection.QuickerWebSocketEndpointProbe
 import app.quickerlink.data.AppPreferences
 import app.quickerlink.data.PreferenceWriteResult
 import app.quickerlink.data.QuickerPreferences
 import app.quickerlink.data.SavedAction
 import app.quickerlink.data.StoredConnection
+import app.quickerlink.transfer.AndroidTransferStore
+import app.quickerlink.transfer.PreparedUpload
+import app.quickerlink.transfer.ScreenPreview
 import app.quickerlink.update.AppRelease
 import app.quickerlink.update.AppUpdateDownloader
 import app.quickerlink.update.GitHubUpdateChecker
@@ -36,7 +48,12 @@ import app.quickerlink.update.UpdateFailure
 import app.quickerlink.update.UpdateInstallException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,9 +61,16 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
@@ -61,6 +85,51 @@ sealed interface QuickerDiscoveryState {
     data class Scanning(val subnet: String) : QuickerDiscoveryState
     data class Failed(val reason: String) : QuickerDiscoveryState
 }
+
+enum class ToolboxTask {
+    CLIPBOARD,
+    SCREEN,
+    RECEIVE_FILE,
+    SEND_FILE,
+    SAVE_SCREEN,
+}
+
+sealed interface ToolboxStatus {
+    data object Idle : ToolboxStatus
+
+    data class Working(
+        val task: ToolboxTask,
+        val title: String,
+        val detail: String,
+        val percent: Int? = null,
+        val canCancel: Boolean = false,
+    ) : ToolboxStatus
+
+    data class Success(
+        val task: ToolboxTask,
+        val title: String,
+        val detail: String,
+    ) : ToolboxStatus
+
+    data class Failed(
+        val task: ToolboxTask,
+        val title: String,
+        val message: String,
+        val canRetry: Boolean = false,
+    ) : ToolboxStatus
+}
+
+private data class PendingUploadConfirmation(
+    val transferId: String,
+    val fileName: String,
+)
+
+data class ScreenPreviewState(
+    val path: String,
+    val name: String,
+    val capturedAt: String,
+    val savedLocation: String? = null,
+)
 
 data class QuickerUiState(
     val ipAddress: String = "",
@@ -77,6 +146,9 @@ data class QuickerUiState(
     val syncingPanelActions: Boolean = false,
     val companionActionPromptVisible: Boolean = false,
     val runningActionIds: Set<String> = emptySet(),
+    val toolboxText: String = "",
+    val toolboxStatus: ToolboxStatus = ToolboxStatus.Idle,
+    val screenPreview: ScreenPreviewState? = null,
     val logs: List<EventLog> = emptyList(),
     val appVersionName: String = BuildConfig.VERSION_NAME,
     val updateState: AppUpdateState = AppUpdateState.Idle,
@@ -197,6 +269,39 @@ internal fun removeManualAction(
     return existing.filterNot { it.id == actionId }
 }
 
+internal fun actionLogIdentity(action: SavedAction): String {
+    val label = compactLogText(action.label, 80)
+    val target = compactLogText(action.actionTarget, 80)
+    return if (label == target) label else "$label（$target）"
+}
+
+internal fun boundedUiErrorMessage(message: String?, fallback: String): String {
+    require(fallback.isNotBlank())
+    return compactLogText(
+        message?.takeIf(String::isNotBlank) ?: fallback,
+        MAX_UI_ERROR_MESSAGE_LENGTH,
+    )
+}
+
+internal fun webSocketCommandFailureMessage(
+    response: QuickerMessage,
+    fallback: String,
+): String = boundedUiErrorMessage(response.message, fallback)
+
+internal fun transferPercent(transferred: Long, total: Long): Int {
+    require(transferred >= 0 && total >= 0 && transferred <= total)
+    return if (total == 0L) 100 else ((transferred * 100L) / total).toInt().coerceIn(0, 100)
+}
+
+internal fun formatTransferBytes(bytes: Long): String {
+    require(bytes >= 0)
+    return when {
+        bytes >= 1024 * 1024 -> String.format(java.util.Locale.ROOT, "%.1f MiB", bytes / (1024.0 * 1024.0))
+        bytes >= 1024 -> String.format(java.util.Locale.ROOT, "%.1f KiB", bytes / 1024.0)
+        else -> "$bytes B"
+    }
+}
+
 internal class CompanionActionUnavailableException(message: String) : IllegalStateException(message)
 
 internal data class PanelSyncFailure(
@@ -214,10 +319,12 @@ internal fun classifyPanelSyncFailure(error: Exception): PanelSyncFailure = when
         showCompanionActionPrompt = true,
     )
     else -> PanelSyncFailure(
-        message = error.message ?: "同步动作失败",
+        message = boundedUiErrorMessage(error.message, "同步动作失败"),
         showCompanionActionPrompt = false,
     )
 }
+
+private const val MAX_UI_ERROR_MESSAGE_LENGTH = 180
 
 internal fun mergePanelActions(
     existing: List<SavedAction>,
@@ -279,6 +386,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     private val updateDownloader = AppUpdateDownloader(application)
     private val subnetProvider = AndroidIpv4SubnetProvider(application)
     private val lanDiscovery = QuickerLanDiscovery(QuickerWebSocketEndpointProbe())
+    private val transferStore = AndroidTransferStore(application)
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
     private val runningActionsLock = Any()
 
@@ -287,6 +395,11 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     private var appInForeground = false
     private var discoveryJob: Job? = null
     private var syncPanelActionsAfterConnect = false
+    private var toolboxJob: Job? = null
+    private var activeTransferId: String? = null
+    private var suppressRemoteTransferCancel = false
+    private var pendingUploadConfirmation: PendingUploadConfirmation? = null
+    private var toolboxCancellationRequested = false
     private val mutableUiState = MutableStateFlow(
         QuickerUiState(
             ipAddress = knownGoodConnection.ipAddress,
@@ -580,12 +693,15 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     operation = "action",
                     action = state.catalogActionId,
                     data = QuickerPanelActionsProtocol.LIST_COMMAND,
+                    logSummary = "同步面板动作：Quicker Link（${state.catalogActionId}）",
+                    logResponse = false,
                 )
                 if (response.isSuccess == false) {
                     throw CompanionActionUnavailableException(
-                        response.message
-                            ?: QuickerProtocol.displayData(response.data)
-                            ?: "Quicker 拒绝读取动作目录",
+                        webSocketCommandFailureMessage(
+                            response,
+                            "Quicker 拒绝读取动作目录",
+                        ),
                     )
                 }
                 val catalog = QuickerPanelActionsProtocol.parse(response.data)
@@ -600,6 +716,10 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 mutableNotices.emit(
                     UiNotice.Success("已同步 ${catalog.actions.size} 个全局与通用动作"),
                 )
+                appendLog(
+                    QuickerEventDirection.INCOMING,
+                    "已同步 ${catalog.actions.size} 个全局与通用动作",
+                )
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
@@ -607,6 +727,10 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 mutableUiState.update {
                     it.copy(companionActionPromptVisible = failure.showCompanionActionPrompt)
                 }
+                appendLog(
+                    QuickerEventDirection.SYSTEM,
+                    "同步面板动作失败：${compactLogText(failure.message)}",
+                )
                 mutableNotices.emit(UiNotice.Error(failure.message))
             } finally {
                 mutableUiState.update { it.copy(syncingPanelActions = false) }
@@ -630,15 +754,268 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     operation = "action",
                     action = action.actionTarget,
                     data = action.parameter.takeIf(String::isNotEmpty),
+                    logSummary = "发送动作：${actionLogIdentity(action)}",
                 )
                 mutableNotices.emit(UiNotice.Success("“${action.label}”已发送"))
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
-                mutableNotices.emit(UiNotice.Error(error.message ?: "动作发送失败"))
+                mutableNotices.emit(
+                    UiNotice.Error(boundedUiErrorMessage(error.message, "动作发送失败")),
+                )
             } finally {
                 mutableUiState.update { it.finishRunningAction(action.id) }
             }
+        }
+    }
+
+    fun stopAction(action: SavedAction) {
+        val quickerActionId = action.quickerActionId
+        if (quickerActionId == null) {
+            mutableNotices.tryEmit(UiNotice.Error("只有从 Quicker 同步的动作支持终止"))
+            return
+        }
+        if (mutableUiState.value.connectionState !is QuickerConnectionState.Ready) {
+            mutableNotices.tryEmit(UiNotice.Error("请先连接 Quicker"))
+            return
+        }
+        if (!reserveAction(action.id)) {
+            mutableNotices.tryEmit(UiNotice.Error("“${action.label}”正在处理"))
+            return
+        }
+
+        val companionActionId = mutableUiState.value.catalogActionId
+        val identity = actionLogIdentity(action)
+        viewModelScope.launch {
+            try {
+                val response = connectionManager.sendCommand(
+                    operation = "action",
+                    action = companionActionId,
+                    data = QuickerActionControlProtocol.stopCommand(quickerActionId),
+                    logSummary = "终止动作：$identity",
+                    logResponse = false,
+                )
+                if (response.isSuccess == false) {
+                    throw IllegalStateException(
+                        webSocketCommandFailureMessage(
+                            response,
+                            "Quicker 拒绝终止动作",
+                        ),
+                    )
+                }
+                QuickerActionControlProtocol.parseStopResponse(response.data, quickerActionId)
+                appendLog(QuickerEventDirection.INCOMING, "已终止动作：$identity")
+                mutableNotices.emit(UiNotice.Success("已终止“${action.label}”"))
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                val outdated = error is UnsupportedActionControlVersionException
+                val message = if (outdated) {
+                    "Quicker Link 动作版本过旧，请更新后重试"
+                } else {
+                    boundedUiErrorMessage(error.message, "终止动作失败")
+                }
+                if (outdated) {
+                    mutableUiState.update { it.copy(companionActionPromptVisible = true) }
+                }
+                appendLog(
+                    QuickerEventDirection.SYSTEM,
+                    "终止动作失败：$identity · ${compactLogText(message)}",
+                )
+                mutableNotices.emit(UiNotice.Error(message))
+            } finally {
+                mutableUiState.update { it.finishRunningAction(action.id) }
+            }
+        }
+    }
+
+    fun updateToolboxText(value: String) {
+        mutableUiState.update { it.copy(toolboxText = value.take(QuickerToolboxProtocol.MAX_CLIPBOARD_CHARS)) }
+    }
+
+    fun sendToolboxText() {
+        val text = mutableUiState.value.toolboxText
+        if (text.isEmpty()) {
+            mutableNotices.tryEmit(UiNotice.Error("请输入要发送的文本"))
+            return
+        }
+        if (text.toByteArray(Charsets.UTF_8).size > MAX_TOOLBOX_TEXT_BYTES) {
+            mutableNotices.tryEmit(UiNotice.Error("文本过大，请缩短后重试"))
+            return
+        }
+        launchToolboxTask(
+            task = ToolboxTask.CLIPBOARD,
+            title = "发送文本",
+            detail = "正在写入电脑剪贴板",
+        ) {
+            val response = connectionManager.sendCommand(
+                operation = "copy",
+                data = text,
+                logSummary = "发送文本到电脑剪贴板",
+                logResponse = false,
+            )
+            if (response.isSuccess != true) {
+                throw IllegalStateException(webSocketCommandFailureMessage(response, "电脑拒绝接收文本"))
+            }
+            mutableUiState.update {
+                it.copy(
+                    toolboxStatus = ToolboxStatus.Success(
+                        ToolboxTask.CLIPBOARD,
+                        "文本已发送",
+                        "已写入电脑剪贴板",
+                    ),
+                )
+            }
+            appendLog(QuickerEventDirection.INCOMING, "文本已写入电脑剪贴板")
+            mutableNotices.emit(UiNotice.Success("已发送到电脑剪贴板"))
+        }
+    }
+
+    fun readComputerClipboard() {
+        launchToolboxTask(
+            task = ToolboxTask.CLIPBOARD,
+            title = "读取剪贴板",
+            detail = "正在读取电脑上的文本",
+        ) {
+            val result = requestToolbox(
+                command = QuickerToolboxProtocol.clipboardReadCommand(),
+                expectedOperation = QuickerToolboxProtocol.OP_CLIPBOARD_READ,
+                logSummary = "读取电脑剪贴板：Quicker Link",
+            ) as QuickerToolboxResult.Clipboard
+            mutableUiState.update {
+                it.copy(
+                    toolboxText = result.text,
+                    toolboxStatus = ToolboxStatus.Success(
+                        ToolboxTask.CLIPBOARD,
+                        "已读取电脑剪贴板",
+                        if (result.text.isEmpty()) "电脑剪贴板中没有文本" else "文本已放入编辑框",
+                    ),
+                )
+            }
+            appendLog(QuickerEventDirection.INCOMING, "已读取电脑剪贴板文本")
+        }
+    }
+
+    fun captureComputerScreen() {
+        launchToolboxTask(
+            task = ToolboxTask.SCREEN,
+            title = "获取当前屏幕",
+            detail = "正在请求电脑生成快照",
+        ) {
+            val result = requestToolbox(
+                command = QuickerToolboxProtocol.screenCaptureCommand(),
+                expectedOperation = QuickerToolboxProtocol.OP_SCREEN_CAPTURE,
+                logSummary = "获取电脑当前屏幕：Quicker Link",
+                timeoutMs = SCREEN_CAPTURE_TIMEOUT_MS,
+            ) as QuickerToolboxResult.Transfer
+            downloadFromComputer(result.descriptor, ToolboxTask.SCREEN, keepAsScreenPreview = true)
+        }
+    }
+
+    fun receiveFileFromComputer() {
+        launchToolboxTask(
+            task = ToolboxTask.RECEIVE_FILE,
+            title = "从电脑接收文件",
+            detail = "请在电脑上选择一个不超过 8 MiB 的文件",
+            canCancel = true,
+        ) {
+            val result = requestToolbox(
+                command = QuickerToolboxProtocol.downloadPickCommand(),
+                expectedOperation = QuickerToolboxProtocol.OP_DOWNLOAD_PICK,
+                logSummary = "从电脑选择文件：Quicker Link",
+                timeoutMs = FILE_PICK_TIMEOUT_MS,
+            ) as QuickerToolboxResult.Transfer
+            downloadFromComputer(result.descriptor, ToolboxTask.RECEIVE_FILE, keepAsScreenPreview = false)
+        }
+    }
+
+    fun sendFileToComputer(uri: Uri) {
+        launchToolboxTask(
+            task = ToolboxTask.SEND_FILE,
+            title = "发送文件到电脑",
+            detail = "正在读取并校验所选文件",
+            canCancel = true,
+            requiresConnection = false,
+        ) {
+            var prepared: PreparedUpload? = null
+            try {
+                prepared = runInterruptible(Dispatchers.IO) { transferStore.prepareUpload(uri) }
+                awaitReadyConnectionForTransfer(prepared.name)
+                uploadToComputer(prepared)
+            } finally {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    transferStore.delete(prepared?.file)
+                }
+            }
+        }
+    }
+
+    fun cancelToolboxTransfer() {
+        val status = mutableUiState.value.toolboxStatus as? ToolboxStatus.Working ?: return
+        if (!status.canCancel) return
+        val job = toolboxJob?.takeIf(Job::isActive) ?: return
+        toolboxCancellationRequested = true
+        job.cancel(CancellationException("用户取消传输"))
+    }
+
+    fun saveScreenToDownloads() {
+        val preview = mutableUiState.value.screenPreview
+        if (preview == null) {
+            mutableNotices.tryEmit(UiNotice.Error("请先获取电脑屏幕"))
+            return
+        }
+        launchToolboxTask(
+            task = ToolboxTask.SAVE_SCREEN,
+            title = "保存屏幕快照",
+            detail = "正在写入下载目录",
+            requiresConnection = false,
+        ) {
+            val saved = withContext(Dispatchers.IO) {
+                transferStore.saveToDownloads(File(preview.path), preview.name, "image/jpeg")
+            }
+            mutableUiState.update { state ->
+                state.copy(
+                    screenPreview = state.screenPreview?.takeIf { it.path == preview.path }
+                        ?.copy(savedLocation = saved.location)
+                        ?: state.screenPreview,
+                    toolboxStatus = ToolboxStatus.Success(
+                        ToolboxTask.SAVE_SCREEN,
+                        "屏幕快照已保存",
+                        "${saved.location} / ${saved.name}",
+                    ),
+                )
+            }
+            mutableNotices.emit(UiNotice.Success("屏幕快照已保存到下载目录"))
+        }
+    }
+
+    fun clearToolboxStatus() {
+        mutableUiState.update { state ->
+            if (state.toolboxStatus is ToolboxStatus.Working) {
+                state
+            } else {
+                if ((state.toolboxStatus as? ToolboxStatus.Failed)?.canRetry == true) {
+                    pendingUploadConfirmation = null
+                }
+                state.copy(toolboxStatus = ToolboxStatus.Idle)
+            }
+        }
+    }
+
+    fun retryUploadConfirmation() {
+        val pending = pendingUploadConfirmation ?: return
+        launchToolboxTask(
+            task = ToolboxTask.SEND_FILE,
+            title = "确认电脑端文件",
+            detail = "正在重新确认 ${pending.fileName}",
+        ) {
+            activeTransferId = pending.transferId
+            suppressRemoteTransferCancel = true
+            val saved = finishUploadWithRecovery(pending.transferId)
+            pendingUploadConfirmation = null
+            activeTransferId = null
+            suppressRemoteTransferCancel = false
+            publishUploadSuccess(saved)
         }
     }
 
@@ -657,12 +1034,16 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 connectionManager.sendCommand(operation = operation, data = text)
             }.onSuccess { response ->
                 if (response.isSuccess == false) {
-                    mutableNotices.emit(UiNotice.Error(response.message ?: "发送失败"))
+                    mutableNotices.emit(
+                        UiNotice.Error(webSocketCommandFailureMessage(response, "发送失败")),
+                    )
                 } else {
                     mutableNotices.emit(UiNotice.Success("已发送到电脑"))
                 }
             }.onFailure { error ->
-                mutableNotices.emit(UiNotice.Error(error.message ?: "发送失败"))
+                mutableNotices.emit(
+                    UiNotice.Error(boundedUiErrorMessage(error.message, "发送失败")),
+                )
             }
         }
     }
@@ -768,6 +1149,437 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         mutableNotices.tryEmit(UiNotice.Error(message))
     }
 
+    private fun launchToolboxTask(
+        task: ToolboxTask,
+        title: String,
+        detail: String,
+        canCancel: Boolean = false,
+        requiresConnection: Boolean = true,
+        block: suspend () -> Unit,
+    ) {
+        if (requiresConnection && mutableUiState.value.connectionState !is QuickerConnectionState.Ready) {
+            mutableNotices.tryEmit(UiNotice.Error("请先连接 Quicker"))
+            return
+        }
+        if (toolboxJob?.isActive == true) {
+            mutableNotices.tryEmit(UiNotice.Error("已有传输任务正在进行"))
+            return
+        }
+
+        toolboxCancellationRequested = false
+        suppressRemoteTransferCancel = false
+        mutableUiState.update {
+            it.copy(toolboxStatus = ToolboxStatus.Working(task, title, detail, canCancel = canCancel))
+        }
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                block()
+            } catch (cancellation: CancellationException) {
+                if (toolboxCancellationRequested) {
+                    val waitingForDesktopPicker = task == ToolboxTask.RECEIVE_FILE && activeTransferId == null
+                    cancelActiveRemoteTransferBestEffort()
+                    mutableUiState.update { it.copy(toolboxStatus = ToolboxStatus.Idle) }
+                    val message = if (waitingForDesktopPicker) {
+                        "手机已停止等待，请在电脑上关闭文件选择窗口"
+                    } else {
+                        "已取消文件传输"
+                    }
+                    appendLog(QuickerEventDirection.SYSTEM, message)
+                    mutableNotices.emit(UiNotice.Success(message))
+                } else if (currentCoroutineContext().isActive) {
+                    handleToolboxFailure(task, title, cancellation)
+                } else {
+                    throw cancellation
+                }
+            } catch (error: Exception) {
+                handleToolboxFailure(task, title, error)
+            } finally {
+                activeTransferId = null
+                suppressRemoteTransferCancel = false
+                toolboxCancellationRequested = false
+                toolboxJob = null
+            }
+        }
+        toolboxJob = job
+        job.start()
+    }
+
+    private suspend fun handleToolboxFailure(task: ToolboxTask, title: String, error: Exception) {
+        val confirmationExpired = error is QuickerToolboxRemoteException && error.code == "transfer_not_found"
+        if (confirmationExpired) pendingUploadConfirmation = null
+        val confirmationUnknown = task == ToolboxTask.SEND_FILE &&
+            pendingUploadConfirmation != null &&
+            suppressRemoteTransferCancel
+        if (!confirmationUnknown) cancelActiveRemoteTransferBestEffort()
+        if (error is QuickerToolboxRemoteException && error.code == "selection_cancelled") {
+            mutableUiState.update { it.copy(toolboxStatus = ToolboxStatus.Idle) }
+            mutableNotices.emit(UiNotice.Success("已取消选择文件"))
+            return
+        }
+
+        val requiresActionUpdate = error is UnsupportedToolboxVersionException ||
+            error is CompanionActionUnavailableException ||
+            error is QuickerToolboxRemoteException && error.code == "unsupported_operation"
+        val message = when {
+            requiresActionUpdate -> "Quicker Link 动作版本过旧或不可用，请安装最新版后重试"
+            confirmationUnknown -> "电脑端保存结果尚未确认。请重新确认；不要直接重复发送"
+            error is TimeoutCancellationException -> "等待 Quicker 响应超时，请检查连接后重试"
+            else -> boundedUiErrorMessage(error.message, "$title 失败")
+        }
+        if (requiresActionUpdate) {
+            mutableUiState.update { it.copy(companionActionPromptVisible = true) }
+        }
+        mutableUiState.update {
+            it.copy(
+                toolboxStatus = ToolboxStatus.Failed(
+                    task,
+                    if (confirmationUnknown) "保存结果待确认" else "$title 失败",
+                    message,
+                    canRetry = confirmationUnknown,
+                ),
+            )
+        }
+        appendLog(
+            QuickerEventDirection.SYSTEM,
+            "$title 失败：${compactLogText(message)}",
+        )
+        mutableNotices.emit(UiNotice.Error(message))
+    }
+
+    private suspend fun awaitReadyConnectionForTransfer(fileName: String) {
+        if (connectionManager.state.value is QuickerConnectionState.Ready) return
+        mutableUiState.update {
+            it.copy(
+                toolboxStatus = ToolboxStatus.Working(
+                    task = ToolboxTask.SEND_FILE,
+                    title = "发送文件到电脑",
+                    detail = "$fileName · 正在恢复局域网连接",
+                    canCancel = true,
+                ),
+            )
+        }
+        withTimeout(FILE_RECONNECT_TIMEOUT_MS) {
+            connectionManager.state.first { it is QuickerConnectionState.Ready }
+        }
+    }
+
+    private suspend fun requestToolbox(
+        command: String,
+        expectedOperation: String,
+        logSummary: String? = null,
+        logRequest: Boolean = true,
+        timeoutMs: Long = TOOLBOX_COMMAND_TIMEOUT_MS,
+    ): QuickerToolboxResult {
+        val response = connectionManager.sendCommand(
+            operation = "action",
+            action = mutableUiState.value.catalogActionId,
+            data = command,
+            timeoutMs = timeoutMs,
+            logSummary = logSummary,
+            logRequest = logRequest,
+            logResponse = false,
+        )
+        if (response.isSuccess == false) {
+            throw CompanionActionUnavailableException(
+                webSocketCommandFailureMessage(response, "Quicker Link 动作不可用"),
+            )
+        }
+        require(response.isSuccess == true) { "Quicker 返回了无效的工具箱状态" }
+        return QuickerToolboxProtocol.parse(response.data, expectedOperation)
+    }
+
+    private suspend fun uploadToComputer(upload: PreparedUpload) {
+        pendingUploadConfirmation = null
+        updateTransferProgress(
+            ToolboxTask.SEND_FILE,
+            "发送文件到电脑",
+            upload.name,
+            transferred = 0,
+            total = upload.size,
+        )
+        val started = requestToolbox(
+            command = QuickerToolboxProtocol.uploadBeginCommand(
+                upload.name,
+                upload.mime,
+                upload.size,
+                upload.sha256,
+            ),
+            expectedOperation = QuickerToolboxProtocol.OP_UPLOAD_BEGIN,
+            logSummary = "发送文件到电脑：${upload.name}",
+        ) as QuickerToolboxResult.UploadStarted
+        require(started.nextOffset == 0L && started.chunkSize == QuickerToolboxProtocol.CHUNK_BYTES) {
+            "电脑返回了无效的上传起点"
+        }
+        activeTransferId = started.transferId
+
+        var offset = 0L
+        FileInputStream(upload.file).use { input ->
+            while (offset < upload.size) {
+                currentCoroutineContext().ensureActive()
+                val count = minOf(QuickerToolboxProtocol.CHUNK_BYTES.toLong(), upload.size - offset).toInt()
+                val bytes = input.readExactChunk(count)
+                val advanced = requestToolbox(
+                    command = QuickerToolboxProtocol.uploadChunkCommand(started.transferId, offset, bytes),
+                    expectedOperation = QuickerToolboxProtocol.OP_UPLOAD_CHUNK,
+                    logRequest = false,
+                ) as QuickerToolboxResult.UploadAdvanced
+                val expectedOffset = offset + bytes.size
+                require(advanced.transferId == started.transferId && advanced.nextOffset == expectedOffset) {
+                    "电脑返回了不一致的上传进度"
+                }
+                offset = expectedOffset
+                updateTransferProgress(
+                    ToolboxTask.SEND_FILE,
+                    "发送文件到电脑",
+                    upload.name,
+                    transferred = offset,
+                    total = upload.size,
+                )
+            }
+            require(input.read() == -1) { "发送期间文件大小发生变化" }
+        }
+
+        pendingUploadConfirmation = PendingUploadConfirmation(started.transferId, upload.name)
+        suppressRemoteTransferCancel = true
+        mutableUiState.update {
+            it.copy(
+                toolboxStatus = ToolboxStatus.Working(
+                    task = ToolboxTask.SEND_FILE,
+                    title = "发送文件到电脑",
+                    detail = "${upload.name} · 正在确认保存",
+                    percent = 100,
+                    canCancel = false,
+                ),
+            )
+        }
+        val saved = finishUploadWithRecovery(started.transferId)
+        pendingUploadConfirmation = null
+        activeTransferId = null
+        suppressRemoteTransferCancel = false
+        publishUploadSuccess(saved)
+    }
+
+    private suspend fun publishUploadSuccess(saved: QuickerToolboxResult.UploadSaved) {
+        mutableUiState.update {
+            it.copy(
+                toolboxStatus = ToolboxStatus.Success(
+                    ToolboxTask.SEND_FILE,
+                    "文件已发送到电脑",
+                    "${saved.location} / ${saved.savedName}",
+                ),
+            )
+        }
+        appendLog(QuickerEventDirection.INCOMING, "文件已发送到电脑：${saved.savedName}")
+        mutableNotices.emit(UiNotice.Success("文件已发送到电脑"))
+    }
+
+    private suspend fun finishUploadWithRecovery(transferId: String): QuickerToolboxResult.UploadSaved {
+        suspend fun finish(): QuickerToolboxResult.UploadSaved = requestToolbox(
+            command = QuickerToolboxProtocol.uploadFinishCommand(transferId),
+            expectedOperation = QuickerToolboxProtocol.OP_UPLOAD_FINISH,
+            logRequest = false,
+        ) as QuickerToolboxResult.UploadSaved
+
+        return try {
+            finish()
+        } catch (error: Exception) {
+            if (error !is TimeoutCancellationException && error !is IllegalStateException) throw error
+            currentCoroutineContext().ensureActive()
+            mutableUiState.update {
+                it.copy(
+                    toolboxStatus = ToolboxStatus.Working(
+                        task = ToolboxTask.SEND_FILE,
+                        title = "发送文件到电脑",
+                        detail = "正在确认电脑端保存结果",
+                        canCancel = false,
+                    ),
+                )
+            }
+            if (connectionManager.state.value !is QuickerConnectionState.Ready) {
+                withTimeout(FILE_RECONNECT_TIMEOUT_MS) {
+                    connectionManager.state.first { it is QuickerConnectionState.Ready }
+                }
+            }
+            finish()
+        }
+    }
+
+    private suspend fun downloadFromComputer(
+        descriptor: QuickerTransferDescriptor,
+        task: ToolboxTask,
+        keepAsScreenPreview: Boolean,
+    ) {
+        if (keepAsScreenPreview) {
+            require(descriptor.mime == "image/jpeg") { "电脑返回的屏幕快照类型无效" }
+        }
+        activeTransferId = descriptor.id
+        val part = withContext(Dispatchers.IO) { transferStore.createIncomingPart() }
+        var committed = false
+        try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            var offset = 0L
+            FileOutputStream(part).use { output ->
+                while (offset < descriptor.size) {
+                    currentCoroutineContext().ensureActive()
+                    val chunk = requestToolbox(
+                        command = QuickerToolboxProtocol.downloadChunkCommand(descriptor.id, offset),
+                        expectedOperation = QuickerToolboxProtocol.OP_DOWNLOAD_CHUNK,
+                        logRequest = false,
+                    ) as QuickerToolboxResult.DownloadChunk
+                    val expectedCount = minOf(
+                        QuickerToolboxProtocol.CHUNK_BYTES.toLong(),
+                        descriptor.size - offset,
+                    ).toInt()
+                    require(
+                        chunk.transferId == descriptor.id &&
+                            chunk.offset == offset &&
+                            chunk.bytes.size == expectedCount,
+                    ) { "电脑返回了不一致的文件分块" }
+                    val nextOffset = offset + chunk.bytes.size
+                    require(chunk.eof == (nextOffset == descriptor.size)) { "电脑返回的文件结束标识无效" }
+                    output.write(chunk.bytes)
+                    digest.update(chunk.bytes)
+                    offset = nextOffset
+                    updateTransferProgress(
+                        task,
+                        if (keepAsScreenPreview) "获取当前屏幕" else "从电脑接收文件",
+                        descriptor.name,
+                        transferred = offset,
+                        total = descriptor.size,
+                    )
+                }
+                output.fd.sync()
+            }
+            val actualHash = digest.digest().toLowerHex()
+            require(
+                MessageDigest.isEqual(
+                    actualHash.toByteArray(Charsets.US_ASCII),
+                    descriptor.sha256.toByteArray(Charsets.US_ASCII),
+                ),
+            ) { "完整文件校验失败" }
+
+            mutableUiState.update {
+                it.copy(
+                    toolboxStatus = ToolboxStatus.Working(
+                        task = task,
+                        title = if (keepAsScreenPreview) "获取当前屏幕" else "从电脑接收文件",
+                        detail = if (keepAsScreenPreview) "正在生成屏幕预览" else "正在保存 ${descriptor.name}",
+                        percent = 100,
+                        canCancel = false,
+                    ),
+                )
+            }
+
+            if (keepAsScreenPreview) {
+                val preview = withContext(Dispatchers.IO) {
+                    transferStore.finalizeScreen(part, descriptor.name, descriptor.mime)
+                }
+                committed = true
+                finishRemoteDownloadBestEffort(descriptor.id)
+                activeTransferId = null
+                publishScreenPreview(preview)
+            } else {
+                val saved = withContext(Dispatchers.IO) {
+                    transferStore.saveToDownloads(part, descriptor.name, descriptor.mime)
+                }
+                committed = true
+                withContext(Dispatchers.IO) { transferStore.delete(part) }
+                finishRemoteDownloadBestEffort(descriptor.id)
+                activeTransferId = null
+                mutableUiState.update {
+                    it.copy(
+                        toolboxStatus = ToolboxStatus.Success(
+                            ToolboxTask.RECEIVE_FILE,
+                            "文件已保存到手机",
+                            "${saved.location} / ${saved.name}",
+                        ),
+                    )
+                }
+                appendLog(QuickerEventDirection.INCOMING, "已从电脑接收文件：${saved.name}")
+                mutableNotices.emit(UiNotice.Success("文件已保存到下载 / Quicker Link"))
+            }
+        } finally {
+            if (!committed) {
+                withContext(NonCancellable + Dispatchers.IO) { transferStore.delete(part) }
+            }
+        }
+    }
+
+    private suspend fun publishScreenPreview(preview: ScreenPreview) {
+        val previousPath = mutableUiState.value.screenPreview?.path
+        val capturedAt = LocalTime.now().format(timeFormatter)
+        mutableUiState.update {
+            it.copy(
+                screenPreview = ScreenPreviewState(
+                    path = preview.file.absolutePath,
+                    name = preview.name,
+                    capturedAt = capturedAt,
+                ),
+                toolboxStatus = ToolboxStatus.Success(
+                    ToolboxTask.SCREEN,
+                    "已获取电脑当前屏幕",
+                    "${preview.name} · $capturedAt",
+                ),
+            )
+        }
+        if (previousPath != null && previousPath != preview.file.absolutePath) {
+            withContext(Dispatchers.IO) { transferStore.delete(File(previousPath)) }
+        }
+        appendLog(QuickerEventDirection.INCOMING, "已获取电脑当前屏幕")
+    }
+
+    private fun updateTransferProgress(
+        task: ToolboxTask,
+        title: String,
+        name: String,
+        transferred: Long,
+        total: Long,
+    ) {
+        mutableUiState.update {
+            it.copy(
+                toolboxStatus = ToolboxStatus.Working(
+                    task = task,
+                    title = title,
+                    detail = "$name · ${formatTransferBytes(transferred)} / ${formatTransferBytes(total)}",
+                    percent = transferPercent(transferred, total),
+                    canCancel = true,
+                ),
+            )
+        }
+    }
+
+    private suspend fun finishRemoteDownloadBestEffort(transferId: String) {
+        val cleaned = withContext(NonCancellable) {
+            runCatching {
+                requestToolbox(
+                    command = QuickerToolboxProtocol.downloadFinishCommand(transferId),
+                    expectedOperation = QuickerToolboxProtocol.OP_DOWNLOAD_FINISH,
+                    logRequest = false,
+                    timeoutMs = REMOTE_CLEANUP_TIMEOUT_MS,
+                )
+            }.isSuccess
+        }
+        if (!cleaned) {
+            appendLog(QuickerEventDirection.SYSTEM, "电脑端传输临时文件将在稍后自动清理")
+        }
+    }
+
+    private suspend fun cancelActiveRemoteTransferBestEffort() {
+        if (suppressRemoteTransferCancel) return
+        val transferId = activeTransferId ?: return
+        withContext(NonCancellable) {
+            runCatching {
+                requestToolbox(
+                    command = QuickerToolboxProtocol.cancelCommand(transferId),
+                    expectedOperation = QuickerToolboxProtocol.OP_TRANSFER_CANCEL,
+                    logRequest = false,
+                    timeoutMs = REMOTE_CLEANUP_TIMEOUT_MS,
+                )
+            }
+        }
+        activeTransferId = null
+    }
+
     private suspend fun handleConnectionState(connectionState: QuickerConnectionState) {
         val errorMessage = when (connectionState) {
             is QuickerConnectionState.AuthFailed -> connectionState.reason
@@ -860,11 +1672,25 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         val command = incomingCommand.message
         if (command.operation == "copy") {
             val text = QuickerProtocol.displayData(command.data).orEmpty()
+            if (
+                text.length > QuickerToolboxProtocol.MAX_CLIPBOARD_CHARS ||
+                text.toByteArray(Charsets.UTF_8).size > MAX_TOOLBOX_TEXT_BYTES
+            ) {
+                connectionManager.replyToCommand(incomingCommand, false, "text_too_large")
+                appendLog(QuickerEventDirection.SYSTEM, "Quicker 发来的文本过大，已拒绝")
+                return
+            }
             val clipboard = getApplication<Application>()
                 .getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText("Quicker", text))
-            connectionManager.replyToCommand(incomingCommand, true, "ok")
-            mutableNotices.tryEmit(UiNotice.Success("已复制 Quicker 发来的文本"))
+            runCatching { clipboard.setPrimaryClip(ClipData.newPlainText("Quicker", text)) }
+                .onSuccess {
+                    connectionManager.replyToCommand(incomingCommand, true, "ok")
+                    mutableUiState.update { it.copy(toolboxText = text) }
+                    mutableNotices.tryEmit(UiNotice.Success("已复制 Quicker 发来的文本"))
+                }
+                .onFailure {
+                    connectionManager.replyToCommand(incomingCommand, false, "clipboard_unavailable")
+                }
         }
     }
 
@@ -898,7 +1724,11 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun appendLog(direction: QuickerEventDirection, text: String) {
-        val log = EventLog(LocalTime.now().format(timeFormatter), direction, text)
+        val log = EventLog(
+            LocalTime.now().format(timeFormatter),
+            direction,
+            compactLogText(text),
+        )
         mutableUiState.update { state ->
             state.copy(logs = (listOf(log) + state.logs).take(MAX_LOG_COUNT))
         }
@@ -910,6 +1740,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
     override fun onCleared() {
         discoveryJob?.cancel()
+        toolboxJob?.cancel()
         connectionManager.close()
         updateChecker.close()
         updateDownloader.close()
@@ -917,7 +1748,29 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
     private companion object {
         const val MAX_LOG_COUNT = 100
+        const val MAX_TOOLBOX_TEXT_BYTES = 48 * 1024
+        const val TOOLBOX_COMMAND_TIMEOUT_MS = 30_000L
+        const val SCREEN_CAPTURE_TIMEOUT_MS = 60_000L
+        const val FILE_PICK_TIMEOUT_MS = 5 * 60_000L
+        const val FILE_RECONNECT_TIMEOUT_MS = 20_000L
+        const val REMOTE_CLEANUP_TIMEOUT_MS = 5_000L
     }
+}
+
+private fun FileInputStream.readExactChunk(count: Int): ByteArray {
+    require(count in 1..QuickerToolboxProtocol.CHUNK_BYTES)
+    val result = ByteArray(count)
+    var offset = 0
+    while (offset < count) {
+        val read = read(result, offset, count - offset)
+        check(read > 0) { "读取暂存文件失败" }
+        offset += read
+    }
+    return result
+}
+
+private fun ByteArray.toLowerHex(): String = joinToString(separator = "") { value ->
+    "%02x".format(value)
 }
 
 internal fun updateFailureMessage(failure: UpdateFailure): String = when (failure) {

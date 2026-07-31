@@ -3,7 +3,6 @@ package app.quickerlink.connection
 import app.quickerlink.data.ActionParameterChoice
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import java.util.Base64
 import java.util.UUID
 
@@ -24,22 +23,31 @@ data class QuickerPanelScene(
 
 data class QuickerPanelActionCatalog(
     val scenes: List<QuickerPanelScene>,
+    val capabilities: QuickerLinkCapabilities = QuickerLinkCapabilities(),
 ) {
     val actions: List<QuickerPanelAction>
         get() = scenes.flatMap(QuickerPanelScene::actions)
 }
+
+data class QuickerLinkCapabilities(
+    val stopAction: Boolean = true,
+    val screenCapture: Boolean = true,
+    val clipboardRead: Boolean = true,
+    val maxFileBytes: Long = QuickerToolboxProtocol.MAX_FILE_BYTES,
+    val chunkBytes: Int = QuickerToolboxProtocol.CHUNK_BYTES,
+)
 
 internal class UnsupportedPanelCatalogVersionException :
     IllegalArgumentException("动作目录版本不受支持")
 
 object QuickerPanelActionsProtocol {
     const val COMPANION_SHARED_ACTION_ID = "b02b2732-f087-4e45-416d-08deee3e76ba"
-    const val LIST_COMMAND = "quickerlink:list-panel-actions:v4"
+    const val LIST_COMMAND = "quickerlink:list-panel-actions:v6"
     const val GLOBAL_SCENE = "_global"
     const val COMMON_SCENE = "common"
 
     private const val PROTOCOL = "quickerlink.panel-actions"
-    private const val VERSION = 4
+    private const val VERSION = 6
     private const val MAX_PAYLOAD_LENGTH = 262_144
     private const val MAX_GROUPS_PER_SCENE = 100
     private const val MAX_ACTIONS = 500
@@ -53,8 +61,10 @@ object QuickerPanelActionsProtocol {
     private const val MAX_ERROR_LENGTH = 200
     private const val MAX_ERROR_CODE_LENGTH = 64
     private val expectedScenes = listOf(GLOBAL_SCENE, COMMON_SCENE)
-    private val successFields = setOf("protocol", "version", "ok", "scenes")
+    private val successFields = setOf("protocol", "version", "ok", "capabilities", "scenes")
     private val errorFields = setOf("protocol", "version", "ok", "code", "error")
+    private val capabilityFields = setOf("stopAction", "screenCapture", "clipboardRead", "fileTransfer")
+    private val fileTransferCapabilityFields = setOf("maxBytes", "chunkBytes")
     private val sceneFields = setOf("scene", "groups", "actions")
     private val actionFields = setOf("id", "title", "group", "order", "icon", "parameterChoices")
     private val parameterChoiceFields = setOf("label", "value")
@@ -77,6 +87,17 @@ object QuickerPanelActionsProtocol {
         }
 
         root.requireFields(successFields, "动作目录响应格式无效")
+        val capabilities = root.obj("capabilities", "动作目录缺少能力声明", "动作能力格式无效")
+        capabilities.requireFields(capabilityFields, "动作能力字段无效")
+        require(capabilities.boolean("stopAction")) { "当前 Quicker Link 动作不支持终止动作" }
+        require(capabilities.boolean("screenCapture")) { "当前 Quicker Link 动作不支持屏幕快照" }
+        require(capabilities.boolean("clipboardRead")) { "当前 Quicker Link 动作不支持读取剪贴板" }
+        val fileTransfer = capabilities.obj("fileTransfer", "动作目录缺少文件传输能力", "文件传输能力格式无效")
+        fileTransfer.requireFields(fileTransferCapabilityFields, "文件传输能力字段无效")
+        val maxFileBytes = fileTransfer.long("maxBytes")
+        val chunkBytes = fileTransfer.int("chunkBytes")
+        require(maxFileBytes == QuickerToolboxProtocol.MAX_FILE_BYTES) { "文件传输大小上限不受支持" }
+        require(chunkBytes == QuickerToolboxProtocol.CHUNK_BYTES) { "文件分块大小不受支持" }
         val scenesJson = root.array("scenes", "动作目录缺少场景", "动作场景格式无效")
         require(scenesJson.size() == expectedScenes.size) { "动作场景数量无效" }
 
@@ -86,7 +107,13 @@ object QuickerPanelActionsProtocol {
             parseScene(element.asJsonObject, expectedScenes[index], seenIds)
         }
         require(scenes.sumOf { it.actions.size } <= MAX_ACTIONS) { "动作数量过多" }
-        return QuickerPanelActionCatalog(scenes)
+        return QuickerPanelActionCatalog(
+            scenes = scenes,
+            capabilities = QuickerLinkCapabilities(
+                maxFileBytes = maxFileBytes,
+                chunkBytes = chunkBytes,
+            ),
+        )
     }
 
     private fun parseScene(
@@ -170,7 +197,7 @@ object QuickerPanelActionsProtocol {
         val root = if (data.isJsonPrimitive && data.asJsonPrimitive.isString) {
             val payload = data.asString
             require(payload.length in 1..MAX_PAYLOAD_LENGTH) { "动作目录长度无效" }
-            runCatching { JsonParser.parseString(payload) }
+            runCatching { StrictJsonParser.parse(payload) }
                 .getOrElse { throw IllegalArgumentException("动作目录不是有效 JSON") }
         } else {
             val payload = data.toString()
@@ -270,6 +297,16 @@ object QuickerPanelActionsProtocol {
             ?: throw IllegalArgumentException("动作目录中的 $name 格式无效")
     }
 
+    private fun JsonObject.long(name: String): Long {
+        val value = get(name)?.takeUnless(JsonElement::isJsonNull)
+            ?: throw IllegalArgumentException("动作目录缺少 $name")
+        require(value.isJsonPrimitive && value.asJsonPrimitive.isNumber) {
+            "动作目录中的 $name 格式无效"
+        }
+        return value.asString.toLongOrNull()
+            ?: throw IllegalArgumentException("动作目录中的 $name 格式无效")
+    }
+
     private fun JsonObject.array(
         name: String,
         missingMessage: String,
@@ -278,6 +315,20 @@ object QuickerPanelActionsProtocol {
         ?.takeUnless(JsonElement::isJsonNull)
         ?.takeIf(JsonElement::isJsonArray)
         ?.asJsonArray
+        ?: if (has(name)) {
+            throw IllegalArgumentException(invalidMessage)
+        } else {
+            throw IllegalArgumentException(missingMessage)
+        }
+
+    private fun JsonObject.obj(
+        name: String,
+        missingMessage: String,
+        invalidMessage: String,
+    ): JsonObject = get(name)
+        ?.takeUnless(JsonElement::isJsonNull)
+        ?.takeIf(JsonElement::isJsonObject)
+        ?.asJsonObject
         ?: if (has(name)) {
             throw IllegalArgumentException(invalidMessage)
         } else {

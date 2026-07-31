@@ -3,12 +3,17 @@ package app.quickerlink.connection
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -103,11 +108,17 @@ class QuickerConnectionManagerTest {
         socket.open()
         socket.receive("""{"messageType":6,"replyTo":1,"isSuccess":true}""")
 
+        val outgoingEvent = async {
+            manager.events.first { it.direction == QuickerEventDirection.OUTGOING }
+        }
+        runCurrent()
+
         withTimeout(100L) {
             manager.dispatchCommand(
                 operation = "action",
                 action = "action-id",
                 data = "parameter",
+                logSummary = "发送动作：截图（action-id）",
             )
         }
 
@@ -119,7 +130,134 @@ class QuickerConnectionManagerTest {
         assertEquals("action-id", request.get("action").asString)
         assertEquals("parameter", request.get("data").asString)
         assertFalse(request.get("wait").asBoolean)
+        assertEquals("发送动作：截图（action-id）", outgoingEvent.await().summary)
         manager.close()
+    }
+
+    @Test
+    fun `successful responses never copy response data into event logs`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+        manager.connect(CONFIG)
+        val socket = factory.latestSocket()
+        socket.open()
+        socket.receive("""{"messageType":6,"replyTo":1,"isSuccess":true}""")
+
+        val incomingEvent = async {
+            manager.events.first { it.direction == QuickerEventDirection.INCOMING }
+        }
+        runCurrent()
+        val response = async {
+            manager.sendCommand(operation = "copy", data = "hello")
+        }
+        runCurrent()
+        val requestSerial = socket.sentTexts
+            .map(QuickerProtocol::parse)
+            .last { it.messageType == QuickerProtocol.MESSAGE_COMMAND }
+            .serial
+        socket.receive(
+            """{"messageType":4,"replyTo":$requestSerial,"isSuccess":true,"data":{"catalog":"${"x".repeat(10_000)}"}}""",
+        )
+
+        assertTrue(response.await().isSuccess == true)
+        assertEquals("操作成功", incomingEvent.await().summary)
+        manager.close()
+    }
+
+    @Test
+    fun `matched requests and responses are silent when logging is disabled`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+        manager.connect(CONFIG)
+        val socket = factory.latestSocket()
+        socket.open()
+        socket.receive("""{"messageType":6,"replyTo":1,"isSuccess":true}""")
+
+        val eventSummaries = mutableListOf<String>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            manager.events.collect { eventSummaries += it.summary }
+        }
+        val response = async {
+            manager.sendCommand(
+                operation = "copy",
+                data = "hello",
+                logRequest = false,
+                logResponse = false,
+            )
+        }
+        runCurrent()
+        val requestSerial = socket.sentTexts
+            .map(QuickerProtocol::parse)
+            .last { it.messageType == QuickerProtocol.MESSAGE_COMMAND }
+            .serial
+
+        socket.receive("""{"messageType":4,"replyTo":$requestSerial,"isSuccess":true}""")
+        runCurrent()
+
+        assertTrue(response.await().isSuccess == true)
+        assertTrue(eventSummaries.isEmpty())
+        manager.close()
+    }
+
+    @Test
+    fun `wrong missing and late reply targets never create response logs`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+        manager.connect(CONFIG)
+        val socket = factory.latestSocket()
+        socket.open()
+        socket.receive("""{"messageType":6,"replyTo":1,"isSuccess":true}""")
+
+        val incomingSummaries = mutableListOf<String>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            manager.events
+                .filter { it.direction == QuickerEventDirection.INCOMING }
+                .collect { incomingSummaries += it.summary }
+        }
+        val response = async {
+            runCatching {
+                manager.sendCommand(operation = "copy", data = "hello", timeoutMs = 100L)
+            }
+        }
+        runCurrent()
+        val requestSerial = requireNotNull(
+            socket.sentTexts
+                .map(QuickerProtocol::parse)
+                .last { it.messageType == QuickerProtocol.MESSAGE_COMMAND }
+                .serial,
+        )
+
+        socket.receive("""{"messageType":4,"replyTo":${requestSerial + 1},"isSuccess":true}""")
+        socket.receive("""{"messageType":4,"isSuccess":true}""")
+        runCurrent()
+        assertFalse(response.isCompleted)
+        assertTrue(incomingSummaries.isEmpty())
+
+        advanceTimeBy(100L)
+        runCurrent()
+        assertTrue(response.await().exceptionOrNull() is TimeoutCancellationException)
+
+        socket.receive("""{"messageType":4,"replyTo":$requestSerial,"isSuccess":true}""")
+        runCurrent()
+        assertTrue(incomingSummaries.isEmpty())
+        manager.close()
+    }
+
+    @Test
+    fun `log details are single line and bounded`() {
+        assertEquals("第一行 第二行", compactLogText("  第一行\r\n  第二行  "))
+        val compact = compactLogText("x".repeat(500), maxLength = 20)
+        assertEquals(20, compact.length)
+        assertTrue(compact.endsWith("..."))
     }
 
     @Test
