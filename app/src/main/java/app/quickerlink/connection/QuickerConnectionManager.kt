@@ -58,10 +58,28 @@ data class QuickerConnectionEvent(
     val summary: String,
 )
 
+class QuickerConnectionBinding internal constructor(
+    private val config: QuickerConnectionConfig,
+) {
+    val endpoint: String = QuickerEndpoint.url(config)
+
+    internal fun matches(other: QuickerConnectionConfig?): Boolean = config == other
+
+    override fun equals(other: Any?): Boolean =
+        other is QuickerConnectionBinding && config == other.config
+
+    override fun hashCode(): Int = config.hashCode()
+
+    override fun toString(): String = endpoint
+}
+
 private data class PendingCommand(
     val response: CompletableDeferred<QuickerMessage>,
     val logResponse: Boolean,
 )
+
+internal const val MAX_WSS_TEXT_CHARACTERS = 1_024 * 1_024
+internal const val MAX_WSS_TEXT_UTF8_BYTES = 2 * 1_024 * 1_024
 
 class QuickerIncomingCommand internal constructor(
     val message: QuickerMessage,
@@ -116,6 +134,7 @@ class QuickerConnectionManager private constructor(
     private var desiredConfig: QuickerConnectionConfig? = null
     private var socket: WebSocket? = null
     private var readyGeneration: Long? = null
+    private var authRequestSerial: Long? = null
     private var retryJob: Job? = null
     private var authTimeoutJob: Job? = null
     private var retryAttempt = 0
@@ -127,6 +146,7 @@ class QuickerConnectionManager private constructor(
         synchronized(lock) {
             desiredConfig = normalizedConfig
             readyGeneration = null
+            authRequestSerial = null
             discardQueuedCommandsLocked()
             retryAttempt = 0
             retryJob?.cancel()
@@ -142,6 +162,7 @@ class QuickerConnectionManager private constructor(
             desiredConfig = null
             generation.incrementAndGet()
             readyGeneration = null
+            authRequestSerial = null
             retryJob?.cancel()
             retryJob = null
             authTimeoutJob?.cancel()
@@ -167,6 +188,7 @@ class QuickerConnectionManager private constructor(
         logSummary: String? = null,
         logRequest: Boolean = true,
         logResponse: Boolean = true,
+        expectedConnection: QuickerConnectionBinding? = null,
     ): QuickerMessage {
         require(operation.isNotBlank()) { "操作类型不能为空" }
         val requestSerial = nextSerial()
@@ -183,6 +205,9 @@ class QuickerConnectionManager private constructor(
             val token = generation.get()
             val currentSocket = socket
             check(readyGeneration == token && currentSocket != null) { "尚未连接到 Quicker" }
+            check(expectedConnection == null || expectedConnection.matches(desiredConfig)) {
+                "Quicker 连接目标已改变"
+            }
 
             pending[requestSerial] = PendingCommand(deferred, logResponse)
             if (currentSocket.send(payload)) {
@@ -217,6 +242,13 @@ class QuickerConnectionManager private constructor(
         } finally {
             synchronized(lock) { pending.remove(requestSerial) }
         }
+    }
+
+    fun currentReadyConnectionBinding(): QuickerConnectionBinding? = synchronized(lock) {
+        val token = generation.get()
+        desiredConfig
+            ?.takeIf { readyGeneration == token && socket != null }
+            ?.let(::QuickerConnectionBinding)
     }
 
     fun dispatchCommand(
@@ -299,6 +331,7 @@ class QuickerConnectionManager private constructor(
             previousSocket = socket
             socket = null
             readyGeneration = null
+            authRequestSerial = null
             authTimeoutJob?.cancel()
             authTimeoutJob = null
             requestsToFail = drainPendingLocked()
@@ -339,9 +372,11 @@ class QuickerConnectionManager private constructor(
         endpoint: String,
     ) = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            val requestSerial = config.password.takeIf(String::isNotEmpty)?.let { nextSerial() }
             val accepted = synchronized(lock) {
                 if (generation.get() == token && desiredConfig == config) {
                     readyGeneration = null
+                    authRequestSerial = requestSerial
                     mutableState.value = QuickerConnectionState.Authenticating
                     true
                 } else {
@@ -355,8 +390,8 @@ class QuickerConnectionManager private constructor(
 
             mutableEvents.tryEmit(QuickerConnectionEvent(QuickerEventDirection.SYSTEM, "WebSocket 已连接，正在认证"))
 
-            if (config.password.isNotEmpty()) {
-                val sent = webSocket.send(QuickerProtocol.authRequest(nextSerial(), config.password))
+            if (requestSerial != null) {
+                val sent = webSocket.send(QuickerProtocol.authRequest(requestSerial, config.password))
                 if (!sent) {
                     webSocket.cancel()
                     handleDisconnect(token, "认证消息发送失败")
@@ -382,6 +417,19 @@ class QuickerConnectionManager private constructor(
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (!isCurrent(token)) return
+            if (
+                text.length > MAX_WSS_TEXT_CHARACTERS ||
+                text.toByteArray(Charsets.UTF_8).size > MAX_WSS_TEXT_UTF8_BYTES
+            ) {
+                mutableEvents.tryEmit(
+                    QuickerConnectionEvent(
+                        QuickerEventDirection.SYSTEM,
+                        "收到的文本消息过大，已拒绝",
+                    ),
+                )
+                webSocket.close(1009, "Text message too large")
+                return
+            }
             val message = runCatching { QuickerProtocol.parse(text) }
                 .getOrElse { error ->
                     mutableEvents.tryEmit(
@@ -395,10 +443,13 @@ class QuickerConnectionManager private constructor(
 
             when (message.messageType) {
                 QuickerProtocol.MESSAGE_AUTH_RESPONSE -> {
-                    val authenticating = synchronized(lock) {
-                        isCurrentLocked(token) && mutableState.value is QuickerConnectionState.Authenticating
+                    val matchingRequest = synchronized(lock) {
+                        isCurrentLocked(token) &&
+                            mutableState.value is QuickerConnectionState.Authenticating &&
+                            authRequestSerial != null &&
+                            message.replyTo == authRequestSerial
                     }
-                    if (authenticating) {
+                    if (matchingRequest) {
                         handleAuthResponse(
                             token = token,
                             endpoint = endpoint,
@@ -406,7 +457,7 @@ class QuickerConnectionManager private constructor(
                             message = message,
                         )
                     } else {
-                        emitIgnoredBeforeReady(message.messageType)
+                        emitIgnoredAuthResponse()
                     }
                 }
 
@@ -504,11 +555,17 @@ class QuickerConnectionManager private constructor(
         message: QuickerMessage,
     ) {
         val accepted = synchronized(lock) {
-            if (!isCurrentLocked(token) || mutableState.value !is QuickerConnectionState.Authenticating) {
+            if (
+                !isCurrentLocked(token) ||
+                mutableState.value !is QuickerConnectionState.Authenticating ||
+                authRequestSerial == null ||
+                message.replyTo != authRequestSerial
+            ) {
                 false
             } else {
                 authTimeoutJob?.cancel()
                 authTimeoutJob = null
+                authRequestSerial = null
 
                 if (message.isSuccess == true) {
                     retryAttempt = 0
@@ -555,6 +612,7 @@ class QuickerConnectionManager private constructor(
             }
             reconnectToken = generation.incrementAndGet()
             readyGeneration = null
+            authRequestSerial = null
             authTimeoutJob?.cancel()
             authTimeoutJob = null
             socket = null
@@ -654,6 +712,15 @@ class QuickerConnectionManager private constructor(
             QuickerConnectionEvent(
                 QuickerEventDirection.SYSTEM,
                 "认证完成前已忽略$description",
+            ),
+        )
+    }
+
+    private fun emitIgnoredAuthResponse() {
+        mutableEvents.tryEmit(
+            QuickerConnectionEvent(
+                QuickerEventDirection.SYSTEM,
+                "已忽略无法关联到本次认证请求的响应",
             ),
         )
     }

@@ -8,6 +8,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.quickerlink.connection.QuickerConnectionConfig
+import app.quickerlink.connection.QuickerConnectionBinding
 import app.quickerlink.connection.QuickerConnectionManager
 import app.quickerlink.connection.QuickerConnectionState
 import app.quickerlink.connection.QuickerActionControlProtocol
@@ -122,6 +123,8 @@ sealed interface ToolboxStatus {
 private data class PendingUploadConfirmation(
     val transferId: String,
     val fileName: String,
+    val connection: QuickerConnectionBinding,
+    val actionId: String,
 )
 
 data class ScreenPreviewState(
@@ -1011,7 +1014,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         ) {
             activeTransferId = pending.transferId
             suppressRemoteTransferCancel = true
-            val saved = finishUploadWithRecovery(pending.transferId)
+            val saved = finishUploadWithRecovery(pending)
             pendingUploadConfirmation = null
             activeTransferId = null
             suppressRemoteTransferCancel = false
@@ -1205,11 +1208,12 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun handleToolboxFailure(task: ToolboxTask, title: String, error: Exception) {
-        val confirmationExpired = error is QuickerToolboxRemoteException && error.code == "transfer_not_found"
-        if (confirmationExpired) pendingUploadConfirmation = null
+        val definiteRemoteFailure = error is QuickerToolboxRemoteException
+        if (definiteRemoteFailure) pendingUploadConfirmation = null
         val confirmationUnknown = task == ToolboxTask.SEND_FILE &&
             pendingUploadConfirmation != null &&
-            suppressRemoteTransferCancel
+            suppressRemoteTransferCancel &&
+            !definiteRemoteFailure
         if (!confirmationUnknown) cancelActiveRemoteTransferBestEffort()
         if (error is QuickerToolboxRemoteException && error.code == "selection_cancelled") {
             mutableUiState.update { it.copy(toolboxStatus = ToolboxStatus.Idle) }
@@ -1269,15 +1273,18 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         logSummary: String? = null,
         logRequest: Boolean = true,
         timeoutMs: Long = TOOLBOX_COMMAND_TIMEOUT_MS,
+        actionId: String = mutableUiState.value.catalogActionId,
+        expectedConnection: QuickerConnectionBinding? = null,
     ): QuickerToolboxResult {
         val response = connectionManager.sendCommand(
             operation = "action",
-            action = mutableUiState.value.catalogActionId,
+            action = actionId,
             data = command,
             timeoutMs = timeoutMs,
             logSummary = logSummary,
             logRequest = logRequest,
             logResponse = false,
+            expectedConnection = expectedConnection,
         )
         if (response.isSuccess == false) {
             throw CompanionActionUnavailableException(
@@ -1290,6 +1297,9 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
     private suspend fun uploadToComputer(upload: PreparedUpload) {
         pendingUploadConfirmation = null
+        val connection = connectionManager.currentReadyConnectionBinding()
+            ?: throw IllegalStateException("尚未连接到 Quicker")
+        val actionId = mutableUiState.value.catalogActionId
         updateTransferProgress(
             ToolboxTask.SEND_FILE,
             "发送文件到电脑",
@@ -1306,6 +1316,8 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             ),
             expectedOperation = QuickerToolboxProtocol.OP_UPLOAD_BEGIN,
             logSummary = "发送文件到电脑：${upload.name}",
+            actionId = actionId,
+            expectedConnection = connection,
         ) as QuickerToolboxResult.UploadStarted
         require(started.nextOffset == 0L && started.chunkSize == QuickerToolboxProtocol.CHUNK_BYTES) {
             "电脑返回了无效的上传起点"
@@ -1322,6 +1334,8 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     command = QuickerToolboxProtocol.uploadChunkCommand(started.transferId, offset, bytes),
                     expectedOperation = QuickerToolboxProtocol.OP_UPLOAD_CHUNK,
                     logRequest = false,
+                    actionId = actionId,
+                    expectedConnection = connection,
                 ) as QuickerToolboxResult.UploadAdvanced
                 val expectedOffset = offset + bytes.size
                 require(advanced.transferId == started.transferId && advanced.nextOffset == expectedOffset) {
@@ -1339,7 +1353,13 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             require(input.read() == -1) { "发送期间文件大小发生变化" }
         }
 
-        pendingUploadConfirmation = PendingUploadConfirmation(started.transferId, upload.name)
+        val pending = PendingUploadConfirmation(
+            transferId = started.transferId,
+            fileName = upload.name,
+            connection = connection,
+            actionId = actionId,
+        )
+        pendingUploadConfirmation = pending
         suppressRemoteTransferCancel = true
         mutableUiState.update {
             it.copy(
@@ -1352,7 +1372,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 ),
             )
         }
-        val saved = finishUploadWithRecovery(started.transferId)
+        val saved = finishUploadWithRecovery(pending)
         pendingUploadConfirmation = null
         activeTransferId = null
         suppressRemoteTransferCancel = false
@@ -1373,17 +1393,26 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         mutableNotices.emit(UiNotice.Success("文件已发送到电脑"))
     }
 
-    private suspend fun finishUploadWithRecovery(transferId: String): QuickerToolboxResult.UploadSaved {
+    private suspend fun finishUploadWithRecovery(
+        pending: PendingUploadConfirmation,
+    ): QuickerToolboxResult.UploadSaved {
         suspend fun finish(): QuickerToolboxResult.UploadSaved = requestToolbox(
-            command = QuickerToolboxProtocol.uploadFinishCommand(transferId),
+            command = QuickerToolboxProtocol.uploadFinishCommand(pending.transferId),
             expectedOperation = QuickerToolboxProtocol.OP_UPLOAD_FINISH,
             logRequest = false,
+            actionId = pending.actionId,
+            expectedConnection = pending.connection,
         ) as QuickerToolboxResult.UploadSaved
 
         return try {
             finish()
         } catch (error: Exception) {
-            if (error !is TimeoutCancellationException && error !is IllegalStateException) throw error
+            if (
+                error is QuickerToolboxRemoteException ||
+                error !is TimeoutCancellationException && error !is IllegalStateException
+            ) {
+                throw error
+            }
             currentCoroutineContext().ensureActive()
             mutableUiState.update {
                 it.copy(

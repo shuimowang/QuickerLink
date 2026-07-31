@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 - Transfer files in strict 64 KiB chunks with per-chunk and whole-file SHA-256 verification, cancellable progress, and temporary `.part` staging
 - Save received files and screen captures through Android's Downloads collection under `Quicker Link`
 - Reject duplicate JSON fields throughout the authenticated connection and companion-action response parsers
+- Reject coerced WSS envelope fields, require authentication replies to match the active request, and bound inbound text before parsing
 
 ### Changed
 
@@ -24,6 +25,8 @@ All notable changes to this project will be documented in this file.
 - Wait for the saved WSS connection to recover after Android's document picker temporarily backgrounds the app
 - Raise the minimum supported platform to Android 10 so all received files use the public Downloads collection
 - Make final upload confirmation idempotently retryable and disable cancellation while either side is publishing a verified file
+- Bind uploads and delayed save confirmation to the original WSS connection settings and companion action
+- Report the companion action's transfer-capacity limit as a specific user-facing error
 
 ## [0.2.0-alpha.5] - 2026-07-31
 

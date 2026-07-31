@@ -83,4 +83,25 @@ class QuickerProtocolTest {
             }
         }
     }
+
+    @Test
+    fun `rejects coerced and non canonical base fields`() {
+        listOf(
+            """{"messageType":4.9}""",
+            """{"messageType":4.0}""",
+            """{"messageType":4e0}""",
+            """{"messageType":"4"}""",
+            """{"messageType":4,"serial":2.9}""",
+            """{"messageType":4,"replyTo":"2"}""",
+            """{"messageType":4,"replyTo":-0}""",
+            """{"messageType":4,"isSuccess":"true"}""",
+            """{"messageType":2,"operation":7}""",
+            """{"messageType":2,"action":false}""",
+            """{"messageType":4,"message":{}}""",
+        ).forEach { payload ->
+            assertThrows(payload, IllegalArgumentException::class.java) {
+                QuickerProtocol.parse(payload)
+            }
+        }
+    }
 }

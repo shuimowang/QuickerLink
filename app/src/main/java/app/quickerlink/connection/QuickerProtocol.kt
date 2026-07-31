@@ -72,17 +72,16 @@ object QuickerProtocol {
         val root = StrictJsonParser.parse(text)
         require(root.isJsonObject) { "消息不是 JSON 对象" }
         val json = root.asJsonObject
-        val messageType = json.find("messageType")?.asIntOrNull()
-            ?: throw IllegalArgumentException("消息缺少 messageType")
+        val messageType = json.requiredInt("messageType")
 
         return QuickerMessage(
             messageType = messageType,
-            serial = json.find("serial")?.asLongOrNull(),
-            replyTo = json.find("replyTo")?.asLongOrNull(),
-            operation = json.find("operation")?.asStringOrNull(),
-            action = json.find("action")?.asStringOrNull(),
-            isSuccess = json.find("isSuccess")?.asBooleanOrNull(),
-            message = json.find("message")?.asStringOrNull(),
+            serial = json.optionalLong("serial"),
+            replyTo = json.optionalLong("replyTo"),
+            operation = json.optionalString("operation"),
+            action = json.optionalString("action"),
+            isSuccess = json.optionalBoolean("isSuccess"),
+            message = json.optionalString("message"),
             data = json.find("data")?.unlessNull(),
             extData = json.find("extData")?.unlessNull(),
             raw = text,
@@ -105,11 +104,41 @@ object QuickerProtocol {
 
     private fun JsonElement.unlessNull(): JsonElement? = takeUnless { it is JsonNull || it.isJsonNull }
 
-    private fun JsonElement.asStringOrNull(): String? = runCatching { asString }.getOrNull()
+    private fun JsonObject.requiredInt(name: String): Int {
+        val value = find(name) ?: throw IllegalArgumentException("消息缺少 $name")
+        return value.canonicalInteger(name).toIntOrNull()
+            ?: throw IllegalArgumentException("消息中的 $name 超出整数范围")
+    }
 
-    private fun JsonElement.asIntOrNull(): Int? = runCatching { asInt }.getOrNull()
+    private fun JsonObject.optionalLong(name: String): Long? = find(name)?.let { value ->
+        value.canonicalInteger(name).toLongOrNull()
+            ?: throw IllegalArgumentException("消息中的 $name 超出整数范围")
+    }
 
-    private fun JsonElement.asLongOrNull(): Long? = runCatching { asLong }.getOrNull()
+    private fun JsonObject.optionalString(name: String): String? = find(name)?.let { value ->
+        require(value.isJsonPrimitive && value.asJsonPrimitive.isString) {
+            "消息中的 $name 必须是字符串"
+        }
+        value.asString
+    }
 
-    private fun JsonElement.asBooleanOrNull(): Boolean? = runCatching { asBoolean }.getOrNull()
+    private fun JsonObject.optionalBoolean(name: String): Boolean? = find(name)?.let { value ->
+        require(value.isJsonPrimitive && value.asJsonPrimitive.isBoolean) {
+            "消息中的 $name 必须是布尔值"
+        }
+        value.asBoolean
+    }
+
+    private fun JsonElement.canonicalInteger(name: String): String {
+        require(isJsonPrimitive && asJsonPrimitive.isNumber) {
+            "消息中的 $name 必须是整数"
+        }
+        val literal = asString
+        require(CANONICAL_INTEGER.matches(literal)) {
+            "消息中的 $name 必须是规范整数"
+        }
+        return literal
+    }
+
+    private val CANONICAL_INTEGER = Regex("(?:0|-?[1-9][0-9]*)")
 }

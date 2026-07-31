@@ -253,6 +253,160 @@ class QuickerConnectionManagerTest {
     }
 
     @Test
+    fun `malformed response fields cannot complete a pending request`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+        manager.connect(CONFIG)
+        val socket = factory.latestSocket()
+        socket.open()
+        val authSerial = requireNotNull(
+            socket.sentTexts.map(QuickerProtocol::parse).last().serial,
+        )
+        socket.receive("""{"messageType":6,"replyTo":$authSerial,"isSuccess":true}""")
+
+        val response = async {
+            manager.sendCommand(operation = "copy", data = "hello")
+        }
+        runCurrent()
+        val requestSerial = requireNotNull(
+            socket.sentTexts
+                .map(QuickerProtocol::parse)
+                .last { it.messageType == QuickerProtocol.MESSAGE_COMMAND }
+                .serial,
+        )
+
+        socket.receive("""{"messageType":4.9,"replyTo":$requestSerial,"isSuccess":true}""")
+        socket.receive("""{"messageType":4,"replyTo":$requestSerial.9,"isSuccess":true}""")
+        socket.receive("""{"messageType":4,"replyTo":$requestSerial,"isSuccess":"true"}""")
+        runCurrent()
+        assertFalse(response.isCompleted)
+
+        socket.receive("""{"messageType":4,"replyTo":$requestSerial,"isSuccess":true}""")
+        assertTrue(response.await().isSuccess == true)
+        manager.close()
+    }
+
+    @Test
+    fun `auth response must match the current auth request`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+        manager.connect(CONFIG)
+        val socket = factory.latestSocket()
+        socket.open()
+        val authSerial = requireNotNull(
+            socket.sentTexts.map(QuickerProtocol::parse).last().serial,
+        )
+
+        socket.receive("""{"messageType":6,"replyTo":${authSerial + 1},"isSuccess":true}""")
+        socket.receive("""{"messageType":6,"isSuccess":true}""")
+        assertEquals(QuickerConnectionState.Authenticating, manager.state.value)
+
+        socket.receive("""{"messageType":6,"replyTo":$authSerial,"isSuccess":true}""")
+        assertTrue(manager.state.value is QuickerConnectionState.Ready)
+        manager.close()
+    }
+
+    @Test
+    fun `oversized wss text is rejected before protocol parsing`() = runTest {
+        val payloads = listOf(
+            """{"messageType":6,"replyTo":1,"isSuccess":true,"padding":"${"x".repeat(MAX_WSS_TEXT_CHARACTERS)}"}""",
+            """{"messageType":6,"replyTo":1,"isSuccess":true,"padding":"${"界".repeat(MAX_WSS_TEXT_UTF8_BYTES / 3 + 1)}"}""",
+        )
+
+        payloads.forEach { payload ->
+            val factory = FakeWebSocketFactory()
+            val manager = QuickerConnectionManager(
+                socketFactory = factory,
+                dispatcher = StandardTestDispatcher(testScheduler),
+            )
+            manager.connect(CONFIG)
+            val socket = factory.latestSocket()
+            socket.open()
+
+            socket.receive(payload)
+
+            assertEquals(QuickerConnectionState.Authenticating, manager.state.value)
+            assertEquals(1009, socket.lastCloseCode)
+            manager.close()
+        }
+    }
+
+    @Test
+    fun `expected connection binding survives reconnect and rejects a different target`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+        manager.connect(CONFIG)
+        val firstSocket = factory.latestSocket()
+        firstSocket.open()
+        val firstAuthSerial = requireNotNull(firstSocket.sentTexts.map(QuickerProtocol::parse).last().serial)
+        firstSocket.receive("""{"messageType":6,"replyTo":$firstAuthSerial,"isSuccess":true}""")
+        val binding = requireNotNull(manager.currentReadyConnectionBinding())
+        assertFalse(binding.toString().contains(CONFIG.password))
+
+        manager.connect(CONFIG)
+        val reconnectedSocket = factory.latestSocket()
+        reconnectedSocket.open()
+        val reconnectAuthSerial = requireNotNull(
+            reconnectedSocket.sentTexts.map(QuickerProtocol::parse).last().serial,
+        )
+        reconnectedSocket.receive(
+            """{"messageType":6,"replyTo":$reconnectAuthSerial,"isSuccess":true}""",
+        )
+        val accepted = async {
+            manager.sendCommand(
+                operation = "action",
+                action = "link-action",
+                expectedConnection = binding,
+            )
+        }
+        runCurrent()
+        val requestSerial = requireNotNull(
+            reconnectedSocket.sentTexts
+                .map(QuickerProtocol::parse)
+                .last { it.messageType == QuickerProtocol.MESSAGE_COMMAND }
+                .serial,
+        )
+        reconnectedSocket.receive(
+            """{"messageType":4,"replyTo":$requestSerial,"isSuccess":true}""",
+        )
+        assertTrue(accepted.await().isSuccess == true)
+
+        val differentConfig = CONFIG.copy(ipAddress = "192.168.1.57")
+        manager.connect(differentConfig)
+        val differentSocket = factory.latestSocket()
+        differentSocket.open()
+        val differentAuthSerial = requireNotNull(
+            differentSocket.sentTexts.map(QuickerProtocol::parse).last().serial,
+        )
+        differentSocket.receive(
+            """{"messageType":6,"replyTo":$differentAuthSerial,"isSuccess":true}""",
+        )
+        val sentBeforeRejectedCommand = differentSocket.sentTexts.size
+
+        val failure = runCatching {
+            manager.sendCommand(
+                operation = "action",
+                action = "link-action",
+                expectedConnection = binding,
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertEquals("Quicker 连接目标已改变", failure?.message)
+        assertEquals(sentBeforeRejectedCommand, differentSocket.sentTexts.size)
+        manager.close()
+    }
+
+    @Test
     fun `log details are single line and bounded`() {
         assertEquals("第一行 第二行", compactLogText("  第一行\r\n  第二行  "))
         val compact = compactLogText("x".repeat(500), maxLength = 20)
@@ -445,6 +599,10 @@ private class FakeWebSocket(
     var acceptTextSends = true
 
     @Volatile
+    var lastCloseCode: Int? = null
+        private set
+
+    @Volatile
     private var active = true
 
     override fun request(): Request = originalRequest
@@ -461,6 +619,7 @@ private class FakeWebSocket(
     override fun send(bytes: ByteString): Boolean = active
 
     override fun close(code: Int, reason: String?): Boolean {
+        lastCloseCode = code
         val wasActive = active
         active = false
         return wasActive

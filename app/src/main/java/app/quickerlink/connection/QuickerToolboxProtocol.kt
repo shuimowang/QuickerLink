@@ -51,7 +51,7 @@ internal class UnsupportedToolboxVersionException :
 internal class QuickerToolboxRemoteException(
     val code: String,
     message: String,
-) : IllegalStateException(message)
+) : RuntimeException(message)
 
 object QuickerToolboxProtocol {
     const val VERSION = 6
@@ -94,6 +94,7 @@ object QuickerToolboxProtocol {
         "file_read_failed" to "读取电脑文件失败",
         "invalid_transfer_id" to "传输标识无效",
         "transfer_not_found" to "传输已失效，请重新开始",
+        "transfer_limit_reached" to "电脑端暂存传输数量已达上限",
         "invalid_offset" to "文件分块位置不一致",
         "invalid_chunk" to "文件分块格式无效",
         "checksum_mismatch" to "文件校验失败",

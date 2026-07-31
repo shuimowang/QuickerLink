@@ -150,6 +150,15 @@ class QuickerToolboxProtocolTest {
         assertEquals("selection_cancelled", error.code)
         assertEquals("已取消选择文件", error.message)
 
+        val capacityError = assertThrows(QuickerToolboxRemoteException::class.java) {
+            QuickerToolboxProtocol.parse(
+                JsonPrimitive(error("transfer_limit_reached", "upload.begin")),
+                QuickerToolboxProtocol.OP_UPLOAD_BEGIN,
+            )
+        }
+        assertEquals("transfer_limit_reached", capacityError.code)
+        assertEquals("电脑端暂存传输数量已达上限", capacityError.message)
+
         listOf(
             error("unknown_error"),
             error("selection_cancelled").dropLast(1) + ",\"extra\":true}",
@@ -243,8 +252,8 @@ class QuickerToolboxProtocolTest {
     private fun success(operation: String, extra: String = ""): String =
         """{"protocol":"quickerlink.toolbox","version":6,"ok":true,"op":"$operation"$extra}"""
 
-    private fun error(code: String): String =
-        """{"protocol":"quickerlink.toolbox","version":6,"ok":false,"op":"download.pick","code":"$code"}"""
+    private fun error(code: String, operation: String = "download.pick"): String =
+        """{"protocol":"quickerlink.toolbox","version":6,"ok":false,"op":"$operation","code":"$code"}"""
 
     private companion object {
         const val TRANSFER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
