@@ -49,7 +49,7 @@ object QuickerPanelActionsProtocol {
     private const val PROTOCOL = "quickerlink.panel-actions"
     private const val VERSION = 6
     private const val MAX_PAYLOAD_LENGTH = 262_144
-    private const val MAX_GROUPS_PER_SCENE = 100
+    private const val MAX_GROUPS_PER_SCENE = 500
     private const val MAX_ACTIONS = 500
     private const val MAX_GROUP_LENGTH = 80
     private const val MAX_TITLE_LENGTH = 160

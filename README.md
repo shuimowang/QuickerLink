@@ -78,18 +78,18 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 `WS
 
 ## 安装预览版
 
-`v0.3.0-alpha.2` 是使用项目专用 Release 密钥签名的早期 prerelease APK，用于测试，不代表已达到稳定生产版质量。GitHub Release 不会发布调试签名或未签名 APK。
+`v0.3.0-alpha.3` 是使用项目专用 Release 密钥签名的早期 prerelease APK，用于测试，不代表已达到稳定生产版质量。GitHub Release 不会发布调试签名或未签名 APK。
 
-如需首次安装，请从 [Releases](https://github.com/shuimowang/QuickerLink/releases) 同时下载 `quicker-link-v0.3.0-alpha.2-release.apk` 和同名 `.sha256` 文件。首次安装时，Android 可能要求允许安装来自浏览器或文件管理器的应用。
+如需首次安装，请从 [Releases](https://github.com/shuimowang/QuickerLink/releases) 同时下载 `quicker-link-v0.3.0-alpha.3-release.apk` 和同名 `.sha256` 文件。首次安装时，Android 可能要求允许安装来自浏览器或文件管理器的应用。
 
 安装前计算下载文件的 SHA-256，并与 `.sha256` 文件中的 64 位十六进制值逐字符比较：
 
 ```powershell
-(Get-FileHash -Algorithm SHA256 -LiteralPath ".\quicker-link-v0.3.0-alpha.2-release.apk").Hash.ToLowerInvariant()
+(Get-FileHash -Algorithm SHA256 -LiteralPath ".\quicker-link-v0.3.0-alpha.3-release.apk").Hash.ToLowerInvariant()
 ```
 
 ```bash
-sha256sum --check quicker-link-v0.3.0-alpha.2-release.apk.sha256
+sha256sum --check quicker-link-v0.3.0-alpha.3-release.apk.sha256
 ```
 
 校验和只能确认下载内容与发布的字节一致；请仍然仅从项目的 GitHub Release 页获取首个可信版本。

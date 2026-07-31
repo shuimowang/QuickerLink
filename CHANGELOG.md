@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.3.0-alpha.3] - 2026-07-31
+
+### Fixed
+
+- Accept Quicker global and common panels containing up to 500 action groups during synchronization
+
 ## [0.3.0-alpha.2] - 2026-07-31
 
 ### Fixed

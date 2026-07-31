@@ -127,6 +127,28 @@ class QuickerPanelActionsTest {
     }
 
     @Test
+    fun acceptsCatalogsWith101And500GroupsPerScene() {
+        listOf(101, 500).forEach { groupCount ->
+            val catalog = parse(
+                globalGroups = groups(groupCount),
+                globalActions = "[]",
+            )
+
+            assertEquals(groupCount, catalog.scenes.first().groups.size)
+        }
+    }
+
+    @Test
+    fun rejectsCatalogWith501GroupsInOneScene() {
+        assertThrows(IllegalArgumentException::class.java) {
+            parse(
+                globalGroups = groups(501),
+                globalActions = "[]",
+            )
+        }
+    }
+
+    @Test
     fun rejectsOldCatalogVersions() {
         val legacy = """
             {
@@ -463,6 +485,10 @@ class QuickerPanelActionsTest {
     private fun defaultActions(): String = """
         [{"id":"$FIRST_ID","title":"打开项目","group":"常用","order":0,"icon":"$QUICKER_ICON","parameterChoices":[]}]
     """.trimIndent()
+
+    private fun groups(count: Int): String = (0 until count).joinToString(",", "[", "]") { index ->
+        "\"分组$index\""
+    }
 
     private fun pngWithDimensions(width: Int, height: Int): String {
         val bytes = Base64.getDecoder().decode(ONE_PIXEL_PNG)
