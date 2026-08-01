@@ -42,8 +42,20 @@ The tag workflow then:
 - requires the tag to equal `v` plus the APK's `versionName`;
 - verifies the APK signature and expected certificate SHA-256 fingerprint with Android `apksigner`;
 - generates and checks a SHA-256 file from the final renamed APK;
-- creates a GitHub prerelease containing only that APK and checksum; and
+- creates a GitHub prerelease containing only that APK and checksum;
 - removes the decoded keystore even when an earlier step fails.
+
+After the Release job succeeds, a separate job calls the reusable Pages workflow with the new tag as `expected_release_tag`. The caller has no top-level permissions: the Release job receives only `contents: write`, while the Pages job receives only `contents: read`, `pages: write`, and `id-token: write`.
+
+The Pages workflow then:
+
+- queries the official repository's latest 10 Releases through the authenticated workflow token;
+- strictly validates the repository, canonical tag/version values, exact APK/checksum asset names and URLs, sizes, and duplicate fields;
+- requires the just-published tag to appear, retrying the bounded API query briefly for release propagation;
+- fails without deploying if the API response or generated index is invalid; and
+- deploys the pairing tool and generated `update-v1.json` together, so a later Pages deployment cannot accidentally remove either one.
+
+The update index is bounded discovery metadata, not a substitute for APK trust. The Android client still accepts only the exact Pages URL without redirects, falls back to one bounded GitHub Releases REST request when needed, and independently verifies the downloaded checksum, package identity, version, and signing certificate. Update checking, downloading, and installation remain manual user actions.
 
 All reusable GitHub Actions in the signing workflow are pinned to full commit SHAs. Review Dependabot updates before accepting a new pinned revision; do not replace those revisions with mutable major-version tags.
 
@@ -53,5 +65,5 @@ Do not upload a local debug APK or unsigned `assembleRelease` output to a GitHub
 
 - Development: run focused tests for the code being changed. Do not build an APK unless the change affects packaging, resources, manifests, or device behavior.
 - Main branch: regular CI runs the complete unit-test suite and Android Lint. New pushes cancel obsolete runs for the same branch.
-- Tagged release: the protected workflow repeats tests and Lint, builds one signed Release APK, verifies its tag, certificate, and checksum, and publishes it.
+- Tagged release: the protected workflow repeats tests and Lint, builds one signed Release APK, verifies its tag, certificate, and checksum, publishes it, and then refreshes the Pages update index through the separately permissioned reusable workflow.
 - Device smoke test: reserve it for changes to pairing, networking, storage, permissions, updates, or user-facing workflows. Documentation and isolated unit-tested logic changes do not require reinstalling the app.

@@ -1,13 +1,8 @@
 package app.quickerlink.ui
 
-import android.app.Activity
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.speech.RecognizerIntent
 import android.util.Base64
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -61,7 +56,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Password
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.PowerSettingsNew
@@ -132,7 +127,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -177,11 +171,6 @@ private enum class MainDestination(val label: String, val icon: ImageVector) {
     ABOUT("关于", Icons.Outlined.Info),
 }
 
-private enum class SpeechTarget {
-    TRANSFER_TEXT,
-    QUICK_INPUT,
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QuickerApp(
@@ -208,43 +197,6 @@ fun QuickerApp(
     var showQuickInput by rememberSaveable { mutableStateOf(false) }
     var quickInputText by rememberSaveable { mutableStateOf("") }
     var quickInputAppendEnter by rememberSaveable { mutableStateOf(true) }
-    var speechTarget by remember { mutableStateOf<SpeechTarget?>(null) }
-    var speechError by remember { mutableStateOf<String?>(null) }
-    val context = LocalContext.current
-    val speechLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
-        val recognized = result.data
-            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-            ?.firstOrNull()
-            ?.trim()
-            .orEmpty()
-        if (recognized.isEmpty()) return@rememberLauncherForActivityResult
-        when (speechTarget) {
-            SpeechTarget.TRANSFER_TEXT -> viewModel.updateToolboxText(recognized)
-            SpeechTarget.QUICK_INPUT -> quickInputText = recognized
-            null -> Unit
-        }
-        speechError = null
-    }
-    val requestSpeech: (SpeechTarget) -> Unit = { target ->
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出要发送的文本")
-        }
-        if (intent.resolveActivity(context.packageManager) == null) {
-            speechError = "手机上没有可用的语音识别服务"
-        } else {
-            speechTarget = target
-            speechError = null
-            runCatching { speechLauncher.launch(intent) }
-                .onFailure {
-                    speechTarget = null
-                    speechError = "手机上没有可用的语音识别服务"
-                }
-        }
-    }
 
     LaunchedEffect(cameraPermissionGranted, pairingScannerRequested) {
         if (cameraPermissionGranted && pairingScannerRequested) {
@@ -266,7 +218,6 @@ fun QuickerApp(
                     if (result == SnackbarResult.ActionPerformed) {
                         quickInputText = ""
                         quickInputAppendEnter = true
-                        speechError = null
                         showQuickInput = true
                     }
                 }
@@ -355,7 +306,6 @@ fun QuickerApp(
                     onReadClipboard = viewModel::readComputerClipboard,
                     onSendText = viewModel::sendToolboxText,
                     onPasteText = viewModel::pasteText,
-                    onVoiceInput = { requestSpeech(SpeechTarget.TRANSFER_TEXT) },
                     onCaptureScreen = viewModel::captureComputerScreen,
                     onScreenClick = viewModel::clickComputerScreen,
                     onSaveScreen = viewModel::saveScreenToDownloads,
@@ -389,15 +339,22 @@ fun QuickerApp(
                 },
                 onDisconnect = viewModel::disconnect,
                 onRequestPermission = onRequestLocalNetworkPermission,
+                notificationPermissionGranted = notificationPermissionGranted,
+                notificationPermissionPermanentlyDenied = notificationPermissionPermanentlyDenied,
+                onRequestNotificationPermission = onRequestNotificationPermission,
                 onBackgroundConnectionChanged = { enabled ->
                     when {
                         !enabled -> viewModel.setBackgroundConnectionEnabled(false)
                         notificationPermissionGranted -> viewModel.setBackgroundConnectionEnabled(true)
                         notificationPermissionPermanentlyDenied -> {
+                            viewModel.setBackgroundConnectionEnabled(true)
                             viewModel.reportBackgroundConnectionPermissionDenied()
                             onOpenAppSettings()
                         }
-                        else -> onRequestNotificationPermission()
+                        else -> {
+                            viewModel.setBackgroundConnectionEnabled(true)
+                            onRequestNotificationPermission()
+                        }
                     }
                 },
                 onClipboardSyncChanged = viewModel::setClipboardSyncEnabled,
@@ -431,10 +388,8 @@ fun QuickerApp(
         QuickInputDialog(
             text = quickInputText,
             appendEnter = quickInputAppendEnter,
-            speechError = speechError,
             onTextChanged = { quickInputText = it.take(16_000) },
             onAppendEnterChanged = { quickInputAppendEnter = it },
-            onVoiceInput = { requestSpeech(SpeechTarget.QUICK_INPUT) },
             onDismiss = { showQuickInput = false },
             onSend = {
                 viewModel.sendQuickInput(quickInputText, quickInputAppendEnter)
@@ -515,10 +470,8 @@ fun QuickerApp(
 private fun QuickInputDialog(
     text: String,
     appendEnter: Boolean,
-    speechError: String?,
     onTextChanged: (String) -> Unit,
     onAppendEnterChanged: (Boolean) -> Unit,
-    onVoiceInput: () -> Unit,
     onDismiss: () -> Unit,
     onSend: () -> Unit,
 ) {
@@ -535,11 +488,6 @@ private fun QuickInputDialog(
                     label = { Text("发送到电脑当前窗口") },
                     minLines = 3,
                     maxLines = 7,
-                    trailingIcon = {
-                        IconButton(onClick = onVoiceInput) {
-                            Icon(Icons.Outlined.Mic, contentDescription = "语音输入")
-                        }
-                    },
                 )
                 Row(
                     modifier = Modifier
@@ -554,13 +502,6 @@ private fun QuickInputDialog(
                 ) {
                     Text("发送后按回车", modifier = Modifier.weight(1f))
                     Switch(checked = appendEnter, onCheckedChange = null)
-                }
-                speechError?.let { message ->
-                    Text(
-                        message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
                 }
             }
         },
@@ -1254,7 +1195,6 @@ private fun TransferScreen(
     onReadClipboard: () -> Unit,
     onSendText: () -> Unit,
     onPasteText: (String) -> Unit,
-    onVoiceInput: () -> Unit,
     onCaptureScreen: () -> Unit,
     onScreenClick: (String, Int, Int) -> Unit,
     onSaveScreen: () -> Unit,
@@ -1399,17 +1339,11 @@ private fun TransferScreen(
 
         item {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "文本",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    IconButton(onClick = onVoiceInput, enabled = !controlsLocked) {
-                        Icon(Icons.Outlined.Mic, contentDescription = "语音输入")
-                    }
-                }
+                Text(
+                    "文本",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
                 OutlinedTextField(
                     value = state.toolboxText,
                     onValueChange = onTextChanged,
@@ -1858,6 +1792,9 @@ private fun ConnectionScreen(
     onScanPairingCode: () -> Unit,
     onDisconnect: () -> Unit,
     onRequestPermission: () -> Unit,
+    notificationPermissionGranted: Boolean,
+    notificationPermissionPermanentlyDenied: Boolean,
+    onRequestNotificationPermission: () -> Unit,
     onBackgroundConnectionChanged: (Boolean) -> Unit,
     onClipboardSyncChanged: (Boolean) -> Unit,
     onOpenAppSettings: () -> Unit,
@@ -1933,7 +1870,14 @@ private fun ConnectionScreen(
                 )
                 BackgroundConnectionRow(
                     checked = state.backgroundConnectionEnabled,
+                    notificationPermissionGranted = notificationPermissionGranted,
+                    notificationPermissionPermanentlyDenied = notificationPermissionPermanentlyDenied,
                     onCheckedChange = onBackgroundConnectionChanged,
+                    onRequestNotificationPermission = if (notificationPermissionPermanentlyDenied) {
+                        onOpenAppSettings
+                    } else {
+                        onRequestNotificationPermission
+                    },
                 )
                 HorizontalDivider()
                 ClipboardSyncRow(
@@ -2160,40 +2104,60 @@ private fun ConnectionScreen(
 @Composable
 private fun BackgroundConnectionRow(
     checked: Boolean,
+    notificationPermissionGranted: Boolean,
+    notificationPermissionPermanentlyDenied: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    onRequestNotificationPermission: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .toggleable(
-                value = checked,
-                role = Role.Switch,
-                onValueChange = onCheckedChange,
-            )
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .toggleable(
+                    value = checked,
+                    role = Role.Switch,
+                    onValueChange = onCheckedChange,
+                )
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = "后台接收与连接",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = if (checked) {
+                        "切换应用或锁屏后仍接收电脑消息和文件"
+                    } else {
+                        "已关闭；App 退到后台后会断开连接"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = checked, onCheckedChange = null)
+        }
+        if (checked && !notificationPermissionGranted) {
             Text(
-                text = "后台增强连接",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = if (checked) {
-                    "锁屏或切换应用后仍保持局域网连接"
-                } else {
-                    "默认关闭；开启后会显示常驻通知"
-                },
+                "后台连接已保持；通知权限仅影响电脑通知显示",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            TextButton(
+                onClick = onRequestNotificationPermission,
+                modifier = Modifier.align(Alignment.End),
+            ) {
+                Icon(Icons.Outlined.Notifications, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (notificationPermissionPermanentlyDenied) "打开通知设置" else "允许电脑通知")
+            }
         }
-        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
@@ -2225,9 +2189,9 @@ private fun ClipboardSyncRow(
             )
             Text(
                 text = if (checked) {
-                    "App 在前台时双向同步短文本"
+                    "App 可见时双向同步短文本"
                 } else {
-                    "默认关闭；敏感剪贴板不会自动同步"
+                    "Android 10+ 不允许普通 App 在后台读取剪贴板"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

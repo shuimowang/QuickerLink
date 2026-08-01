@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.5.0-alpha.3] - 2026-08-01
+
+### Changed
+
+- Remove the Android system speech-recognition entry points from the transfer editor and post-action quick input
+- Rename the foreground-service option to “后台接收与连接”, enable it by default unless the user explicitly opts out, and retain the authenticated session for desktop text, notification, and file-offer delivery
+- Keep background WSS retention active when Android notification permission is denied; only notification visibility is affected
+- Discover updates from a bounded GitHub Pages manifest first and use the GitHub Releases REST API only as a one-request fallback; checks, downloads, and installs remain user-initiated
+
+### Fixed
+
+- Strip one case-insensitive `sendText:` compatibility prefix before placing desktop text in the phone clipboard or transfer editor
+- Retain background-delivered desktop text in the transfer editor even when an OEM blocks writing the phone clipboard
+
+### Security
+
+- Keep automatic clipboard synchronization app-visible only on Android 10+, regardless of the background connection setting
+- Continue to omit SMS read/receive and `VpnService` capabilities; SMS monitoring and phone system proxying remain unimplemented
+- Reject redirected, oversized, malformed, wrong-repository, or noncanonical update manifests before trusting their exact GitHub release asset metadata
+
 ## [0.5.0-alpha.2] - 2026-08-01
 
 ### Fixed

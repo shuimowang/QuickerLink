@@ -1,10 +1,13 @@
 package app.quickerlink.update
 
+import app.quickerlink.connection.StrictJsonParser
 import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URI
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,21 +33,78 @@ class GitHubUpdateChecker(
     private val client: OkHttpClient = defaultClient(),
 ) : AutoCloseable {
     fun check(currentVersionName: String): UpdateCheckResult {
+        if (ReleaseVersion.parse(currentVersionName) == null) {
+            throw IOException("Current app version is invalid")
+        }
+
+        return try {
+            checkPages(currentVersionName)
+        } catch (pagesFailure: IOException) {
+            try {
+                checkApiFallback(currentVersionName)
+            } catch (apiFailure: IOException) {
+                apiFailure.addSuppressed(pagesFailure)
+                throw apiFailure
+            }
+        }
+    }
+
+    private fun checkPages(currentVersionName: String): UpdateCheckResult {
+        val request = Request.Builder()
+            .url(UPDATE_INDEX_URL)
+            .header("Accept", "application/json")
+            .header("Cache-Control", "no-cache")
+            .header("User-Agent", USER_AGENT)
+            .build()
+        val responseBody = readBoundedJson(
+            request = request,
+            maxBytes = MAX_UPDATE_INDEX_BYTES,
+            sourceName = "Update index",
+            isTrustedFinalUrl = ::isTrustedUpdateIndexUrl,
+        )
+        return evaluateUpdateManifest(currentVersionName, responseBody)
+    }
+
+    private fun checkApiFallback(currentVersionName: String): UpdateCheckResult {
         val request = Request.Builder()
             .url(RELEASES_API_URL)
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
             .header("User-Agent", USER_AGENT)
             .build()
+        val responseBody = readBoundedJson(
+            request = request,
+            maxBytes = MAX_API_RESPONSE_BYTES,
+            sourceName = "GitHub release API",
+            isTrustedFinalUrl = { it == RELEASES_API_URL },
+        )
+        return evaluateReleaseResponse(currentVersionName, responseBody)
+    }
 
-        val responseBody = client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("GitHub returned HTTP ${response.code}")
-            val body = response.body
-            val contentLength = body.contentLength()
-            if (contentLength > MAX_RESPONSE_BYTES) {
-                throw IOException("GitHub release response is too large")
+    private fun readBoundedJson(
+        request: Request,
+        maxBytes: Long,
+        sourceName: String,
+        isTrustedFinalUrl: (String) -> Boolean,
+    ): String {
+        return client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("$sourceName returned HTTP ${response.code}")
             }
-            ByteArrayOutputStream().use { output ->
+            if (!isTrustedFinalUrl(response.request.url.toString())) {
+                throw IOException("$sourceName redirected to an untrusted address")
+            }
+
+            val body = response.body
+            val contentType = body.contentType()
+            if (contentType == null || contentType.type != "application" || contentType.subtype != "json") {
+                throw IOException("$sourceName content type is invalid")
+            }
+            if (body.contentLength() > maxBytes) {
+                throw IOException("$sourceName response is too large")
+            }
+
+            val bytes = ByteArrayOutputStream().use { output ->
                 body.byteStream().use { input ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     var total = 0L
@@ -52,17 +112,16 @@ class GitHubUpdateChecker(
                         val count = input.read(buffer)
                         if (count < 0) break
                         total += count
-                        if (total > MAX_RESPONSE_BYTES) {
-                            throw IOException("GitHub release response is too large")
+                        if (total > maxBytes) {
+                            throw IOException("$sourceName response is too large")
                         }
                         output.write(buffer, 0, count)
                     }
                 }
-                output.toByteArray().toString(Charsets.UTF_8)
+                output.toByteArray()
             }
+            decodeUtf8(bytes, sourceName)
         }
-
-        return evaluateReleaseResponse(currentVersionName, responseBody)
     }
 
     override fun close() {
@@ -73,16 +132,50 @@ class GitHubUpdateChecker(
     }
 
     private companion object {
-        const val RELEASES_API_URL =
-            "https://api.github.com/repos/shuimowang/QuickerLink/releases?per_page=10"
-        const val MAX_RESPONSE_BYTES = 512L * 1024L
-
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .callTimeout(12, TimeUnit.SECONDS)
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .retryOnConnectionFailure(false)
             .build()
     }
+}
+
+private fun decodeUtf8(bytes: ByteArray, sourceName: String): String = try {
+    Charsets.UTF_8.newDecoder()
+        .onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT)
+        .decode(ByteBuffer.wrap(bytes))
+        .toString()
+} catch (error: CharacterCodingException) {
+    throw IOException("$sourceName is not valid UTF-8", error)
+}
+
+internal fun evaluateUpdateManifest(
+    currentVersionName: String,
+    responseBody: String,
+): UpdateCheckResult {
+    val currentVersion = ReleaseVersion.parse(currentVersionName)
+        ?: throw IOException("Current app version is invalid")
+    val root = runCatching { StrictJsonParser.parse(responseBody) }
+        .getOrElse { throw IOException("Update index response is invalid", it) }
+    if (!root.isJsonObject) throw IOException("Update index response is not an object")
+    val manifest = root.asJsonObject
+    if (manifest.keySet() != UPDATE_INDEX_FIELDS ||
+        manifest.exactIntOrNull("schema_version") != UPDATE_INDEX_SCHEMA_VERSION ||
+        manifest.stringOrNull("repository") != EXPECTED_REPOSITORY
+    ) {
+        throw IOException("Update index identity is invalid")
+    }
+    val releases = manifest["releases"]?.takeIf { it.isJsonArray }?.asJsonArray
+        ?: throw IOException("Update index releases are invalid")
+    if (releases.size() !in 1..MAX_UPDATE_INDEX_RELEASES) {
+        throw IOException("Update index release count is invalid")
+    }
+
+    return evaluateReleaseElements(currentVersion, releases, "Update index")
 }
 
 internal fun evaluateReleaseResponse(
@@ -91,17 +184,36 @@ internal fun evaluateReleaseResponse(
 ): UpdateCheckResult {
     val currentVersion = ReleaseVersion.parse(currentVersionName)
         ?: throw IOException("Current app version is invalid")
-    val root = runCatching { JsonParser.parseString(responseBody) }
-        .getOrElse { throw IOException("GitHub release response is invalid", it) }
-    if (!root.isJsonArray) throw IOException("GitHub release response is not an array")
+    val root = runCatching { StrictJsonParser.parse(responseBody) }
+        .getOrElse { throw IOException("GitHub release API response is invalid", it) }
+    if (!root.isJsonArray || root.asJsonArray.size() !in 1..MAX_UPDATE_INDEX_RELEASES) {
+        throw IOException("GitHub release API response has an invalid release count")
+    }
+    return evaluateReleaseElements(currentVersion, root.asJsonArray, "GitHub release API response")
+}
 
-    val latest = root.asJsonArray.asSequence()
+private fun evaluateReleaseElements(
+    currentVersion: ReleaseVersion,
+    releases: Iterable<com.google.gson.JsonElement>,
+    sourceName: String,
+): UpdateCheckResult {
+    val seenTags = mutableSetOf<String>()
+    val seenVersions = mutableSetOf<ReleaseVersion>()
+    val latest = releases.asSequence()
         .mapNotNull { element ->
-            val release = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
-            parseRelease(release)
+            if (!element.isJsonObject) throw IOException("$sourceName contains an invalid release")
+            val release = element.asJsonObject
+            release.stringOrNull("tag_name")?.let { tag ->
+                if (!seenTags.add(tag)) throw IOException("$sourceName contains a duplicate release tag")
+            }
+            parseRelease(release)?.also { parsed ->
+                if (!seenVersions.add(parsed.version)) {
+                    throw IOException("$sourceName contains a duplicate release version")
+                }
+            }
         }
         .maxByOrNull(VersionedRelease::version)
-        ?: throw IOException("No usable GitHub release with verified assets was found")
+        ?: throw IOException("No usable release with verified assets was found")
 
     return if (latest.version > currentVersion) {
         UpdateCheckResult.Available(latest.release)
@@ -112,12 +224,14 @@ internal fun evaluateReleaseResponse(
 
 private fun parseRelease(release: JsonObject): VersionedRelease? {
     if (release.booleanOrNull("draft") != false) return null
+    if (release.booleanOrNull("prerelease") == null) return null
 
     val tagName = release.stringOrNull("tag_name")
         ?.takeIf { it.length <= MAX_TAG_LENGTH && it.startsWith('v') }
         ?: return null
     val versionName = tagName.removePrefix("v")
     val version = ReleaseVersion.parse(versionName) ?: return null
+    if (version.toString() != versionName) return null
     val pageUrl = release.stringOrNull("html_url") ?: return null
     if (!isTrustedReleasePageUrl(pageUrl, tagName)) return null
 
@@ -194,12 +308,18 @@ internal fun isTrustedReleaseAssetUrl(url: String, tagName: String, fileName: St
         "/$REPOSITORY_OWNER/$REPOSITORY_NAME/releases/download/$tagName/$fileName",
     )
 
-private fun isExactGitHubUrl(url: String, expectedRawPath: String): Boolean = runCatching {
+internal fun isTrustedUpdateIndexUrl(url: String): Boolean =
+    isExactHttpsUrl(url, UPDATE_INDEX_HOST, UPDATE_INDEX_PATH)
+
+private fun isExactGitHubUrl(url: String, expectedRawPath: String): Boolean =
+    isExactHttpsUrl(url, GITHUB_HOST, expectedRawPath)
+
+private fun isExactHttpsUrl(url: String, expectedHost: String, expectedRawPath: String): Boolean = runCatching {
     val parsed = URI(url)
     !parsed.isOpaque &&
         parsed.scheme == "https" &&
-        parsed.rawAuthority == GITHUB_HOST &&
-        parsed.host == GITHUB_HOST &&
+        parsed.rawAuthority == expectedHost &&
+        parsed.host == expectedHost &&
         parsed.port == -1 &&
         parsed.rawUserInfo == null &&
         parsed.rawQuery == null &&
@@ -216,8 +336,16 @@ private fun JsonObject.booleanOrNull(name: String): Boolean? = runCatching {
     get(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
 }.getOrNull()
 
-private fun JsonObject.longOrNull(name: String): Long? = runCatching {
-    get(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asLong
+private fun JsonObject.longOrNull(name: String): Long? = integerTextOrNull(name)?.toLongOrNull()
+
+private fun JsonObject.exactIntOrNull(name: String): Int? = integerTextOrNull(name)?.toIntOrNull()
+
+private fun JsonObject.integerTextOrNull(name: String): String? = runCatching {
+    get(name)
+        ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+        ?.asJsonPrimitive
+        ?.asString
+        ?.takeIf(JSON_INTEGER_PATTERN::matches)
 }.getOrNull()
 
 private fun expectedApkFileName(tagName: String): String = "quicker-link-$tagName-release.apk"
@@ -293,7 +421,19 @@ internal const val UPDATE_CACHE_DIRECTORY = "updates"
 internal const val USER_AGENT = "QuickerLink-Android"
 private const val REPOSITORY_OWNER = "shuimowang"
 private const val REPOSITORY_NAME = "QuickerLink"
+private const val EXPECTED_REPOSITORY = "$REPOSITORY_OWNER/$REPOSITORY_NAME"
 private const val GITHUB_HOST = "github.com"
+private const val UPDATE_INDEX_HOST = "shuimowang.github.io"
+private const val UPDATE_INDEX_PATH = "/QuickerLink/update-v1.json"
+private const val UPDATE_INDEX_URL = "https://$UPDATE_INDEX_HOST$UPDATE_INDEX_PATH"
+private const val RELEASES_API_URL =
+    "https://api.github.com/repos/$EXPECTED_REPOSITORY/releases?per_page=10"
+private const val UPDATE_INDEX_SCHEMA_VERSION = 1
+private const val MAX_UPDATE_INDEX_RELEASES = 10
+private const val MAX_UPDATE_INDEX_BYTES = 64L * 1024L
+private const val MAX_API_RESPONSE_BYTES = 512L * 1024L
 private const val MAX_TAG_LENGTH = 80
 private const val MAX_RELEASE_NAME_LENGTH = 160
 private const val MAX_PUBLISHED_AT_LENGTH = 64
+private val UPDATE_INDEX_FIELDS = setOf("schema_version", "repository", "releases")
+private val JSON_INTEGER_PATTERN = Regex("-?(?:0|[1-9]\\d*)")

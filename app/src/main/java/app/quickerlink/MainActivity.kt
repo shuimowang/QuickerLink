@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
             !ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.POST_NOTIFICATIONS)
         if (granted) {
             notificationPermissionPermanentlyDenied.value = false
-            viewModel.setBackgroundConnectionEnabled(true)
+            viewModel.onNotificationPermissionStatus(true)
         } else {
             viewModel.reportBackgroundConnectionPermissionDenied()
         }
@@ -170,7 +170,7 @@ class MainActivity : ComponentActivity() {
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionGranted.value = true
-            viewModel.setBackgroundConnectionEnabled(true)
+            viewModel.onNotificationPermissionStatus(true)
             return
         }
         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)

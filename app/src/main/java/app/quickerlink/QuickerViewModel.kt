@@ -35,6 +35,7 @@ import app.quickerlink.connection.UnsupportedToolboxVersionException
 import app.quickerlink.connection.compactLogText
 import app.quickerlink.connection.QuickerWebSocketEndpointProbe
 import app.quickerlink.data.AppPreferences
+import app.quickerlink.data.DEFAULT_BACKGROUND_CONNECTION_ENABLED
 import app.quickerlink.data.PreferenceWriteResult
 import app.quickerlink.data.QuickerPreferences
 import app.quickerlink.data.SavedAction
@@ -160,7 +161,7 @@ data class QuickerUiState(
     val connectionError: String? = null,
     val localNetworkPermissionGranted: Boolean = true,
     val localNetworkPermissionPermanentlyDenied: Boolean = false,
-    val backgroundConnectionEnabled: Boolean = false,
+    val backgroundConnectionEnabled: Boolean = DEFAULT_BACKGROUND_CONNECTION_ENABLED,
     val backgroundConnectionError: String? = null,
     val clipboardSyncEnabled: Boolean = false,
     val clipboardSyncError: String? = null,
@@ -351,6 +352,8 @@ internal fun classifyPanelSyncFailure(error: Exception): PanelSyncFailure = when
 }
 
 private const val MAX_UI_ERROR_MESSAGE_LENGTH = 180
+private const val BACKGROUND_NOTIFICATION_PERMISSION_MESSAGE =
+    "后台连接仍会保持，电脑通知暂不显示"
 
 internal fun mergePanelActions(
     existing: List<SavedAction>,
@@ -619,12 +622,12 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                         }
                         .onSuccess {
                             mutableUiState.update { it.copy(backgroundConnectionError = null) }
-                            mutableNotices.tryEmit(UiNotice.Success("后台增强连接已开启"))
+                            mutableNotices.tryEmit(UiNotice.Success("后台接收与连接已开启"))
                         }
                 } else {
                     QuickerLinkService.stop(getApplication())
                     mutableUiState.update { it.copy(backgroundConnectionError = null) }
-                    mutableNotices.tryEmit(UiNotice.Success("后台增强连接已关闭"))
+                    mutableNotices.tryEmit(UiNotice.Success("后台接收与连接已关闭"))
                 }
             }
 
@@ -664,33 +667,26 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             }
             return
         }
-        if (granted) {
-            runCatching { QuickerLinkService.start(getApplication()) }
-                .onFailure { error ->
-                    connectionRuntime.setBackgroundConnectionEnabled(false)
-                    mutableUiState.update {
-                        it.copy(
-                            backgroundConnectionError = boundedUiErrorMessage(
-                                error.message,
-                                "无法启动后台连接服务",
-                            ),
-                        )
-                    }
+        runCatching { QuickerLinkService.start(getApplication()) }
+            .onFailure { error ->
+                connectionRuntime.setBackgroundConnectionEnabled(false)
+                mutableUiState.update {
+                    it.copy(
+                        backgroundConnectionError = boundedUiErrorMessage(
+                            error.message,
+                            "无法启动后台连接服务",
+                        ),
+                    )
                 }
-        } else {
-            connectionRuntime.setBackgroundConnectionEnabled(false)
-            QuickerLinkService.stop(getApplication())
-            mutableUiState.update {
-                it.copy(backgroundConnectionError = "需要通知权限才能保持后台连接")
             }
-        }
+            .onSuccess {
+                mutableUiState.update { it.copy(backgroundConnectionError = null) }
+            }
     }
 
     fun reportBackgroundConnectionPermissionDenied() {
-        mutableUiState.update {
-            it.copy(backgroundConnectionError = "未授予通知权限，后台增强连接未开启")
-        }
-        mutableNotices.tryEmit(UiNotice.Error("需要通知权限才能开启后台增强连接"))
+        mutableUiState.update { it.copy(backgroundConnectionError = null) }
+        mutableNotices.tryEmit(UiNotice.Error(BACKGROUND_NOTIFICATION_PERMISSION_MESSAGE))
     }
 
     fun connect() {

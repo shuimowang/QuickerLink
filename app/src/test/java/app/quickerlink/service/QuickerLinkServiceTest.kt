@@ -21,7 +21,7 @@ class QuickerLinkServiceTest {
     @Test
     fun `disconnected notification prompts user to open the app`() {
         assertEquals(
-            "后台增强连接已开启" to "打开 App 连接电脑",
+            "后台接收与连接已开启" to "打开 App 连接电脑",
             notificationText(QuickerConnectionState.Disconnected),
         )
     }

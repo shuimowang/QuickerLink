@@ -163,5 +163,5 @@ internal fun notificationText(state: QuickerConnectionState): Pair<String, Strin
         "${state.delaySeconds} 秒后重试"
     is QuickerConnectionState.AuthFailed -> "Quicker Link 认证失败" to state.reason
     is QuickerConnectionState.Error -> "Quicker Link 连接异常" to state.reason
-    QuickerConnectionState.Disconnected -> "后台增强连接已开启" to "打开 App 连接电脑"
+    QuickerConnectionState.Disconnected -> "后台接收与连接已开启" to "打开 App 连接电脑"
 }

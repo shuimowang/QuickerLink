@@ -122,7 +122,10 @@ class AppPreferences(context: Context) : QuickerPreferences {
     }
 
     override fun loadFeatureSettings(): FeatureSettings = FeatureSettings(
-        backgroundConnectionEnabled = preferences.getBoolean(KEY_BACKGROUND_CONNECTION, false),
+        backgroundConnectionEnabled = preferences.getBoolean(
+            KEY_BACKGROUND_CONNECTION,
+            DEFAULT_BACKGROUND_CONNECTION_ENABLED,
+        ),
         clipboardSyncEnabled = preferences.getBoolean(KEY_CLIPBOARD_SYNC, false),
     )
 

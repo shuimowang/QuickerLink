@@ -31,8 +31,8 @@ android {
         applicationId = "app.quickerlink"
         minSdk = 29
         targetSdk = 37
-        versionCode = 12
-        versionName = "0.5.0-alpha.2"
+        versionCode = 13
+        versionName = "0.5.0-alpha.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

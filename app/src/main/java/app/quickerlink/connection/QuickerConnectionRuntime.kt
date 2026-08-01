@@ -160,7 +160,9 @@ class QuickerConnectionRuntime(context: Context) {
     }
 
     private fun handleLegacyText(incomingCommand: QuickerIncomingCommand) {
-        val text = QuickerProtocol.displayData(incomingCommand.message.data).orEmpty()
+        val text = normalizeIncomingDesktopText(
+            QuickerProtocol.displayData(incomingCommand.message.data).orEmpty(),
+        )
         if (!isValidIncomingText(text)) {
             manager.replyToCommand(incomingCommand, false, "text_too_large")
             mutableEvents.tryEmit(
@@ -187,12 +189,18 @@ class QuickerConnectionRuntime(context: Context) {
             }
         when (push) {
             is QuickerMobilePush.Text -> {
-                if (!writePhoneClipboard("Quicker Link", push.text)) {
-                    manager.replyToCommand(incomingCommand, false, "clipboard_unavailable")
+                val text = normalizeIncomingDesktopText(push.text)
+                if (!isValidIncomingText(text)) {
+                    manager.replyToCommand(incomingCommand, false, "invalid_text")
                     return
                 }
-                manager.replyToCommand(incomingCommand, true, "ok")
-                publishReceivedText(push.text, "电脑")
+                val copiedToClipboard = writePhoneClipboard("Quicker Link", text)
+                manager.replyToCommand(
+                    incomingCommand,
+                    true,
+                    if (copiedToClipboard) "ok" else "received",
+                )
+                publishReceivedText(text, "电脑", copiedToClipboard)
             }
 
             is QuickerMobilePush.Notification -> {
@@ -245,7 +253,8 @@ class QuickerConnectionRuntime(context: Context) {
     }
 
     private fun isValidIncomingText(text: String): Boolean =
-        text.length <= QuickerToolboxProtocol.MAX_CLIPBOARD_CHARS &&
+        text.isNotBlank() &&
+            text.length <= QuickerToolboxProtocol.MAX_CLIPBOARD_CHARS &&
             text.toByteArray(Charsets.UTF_8).size <= MAX_INCOMING_TEXT_BYTES
 
     private fun writePhoneClipboard(label: String, text: String): Boolean {
@@ -257,9 +266,20 @@ class QuickerConnectionRuntime(context: Context) {
         }.isSuccess
     }
 
-    private fun publishReceivedText(text: String, source: String) {
+    private fun publishReceivedText(
+        text: String,
+        source: String,
+        copiedToClipboard: Boolean = true,
+    ) {
         receivedTextSequence = if (receivedTextSequence == Long.MAX_VALUE) 1L else receivedTextSequence + 1L
         mutableReceivedText.value = QuickerReceivedText(text, source, receivedTextSequence)
+        if (!appInForeground) {
+            MobileNotificationPublisher.publish(
+                applicationContext,
+                "收到电脑文本",
+                receivedTextNotificationBody(copiedToClipboard),
+            )
+        }
         mutableEvents.tryEmit(QuickerConnectionRuntimeEvent.TextReceived(text, source))
     }
 
@@ -272,3 +292,19 @@ internal fun shouldRetainConnection(
     appInForeground: Boolean,
     backgroundConnectionEnabled: Boolean,
 ): Boolean = appInForeground || backgroundConnectionEnabled
+
+internal fun normalizeIncomingDesktopText(text: String): String =
+    if (text.startsWith(DESKTOP_TEXT_PREFIX, ignoreCase = true)) {
+        text.substring(DESKTOP_TEXT_PREFIX.length)
+    } else {
+        text
+    }
+
+private const val DESKTOP_TEXT_PREFIX = "sendText:"
+
+internal fun receivedTextNotificationBody(copiedToClipboard: Boolean): String =
+    if (copiedToClipboard) {
+        "已复制到手机剪贴板"
+    } else {
+        "已保存到 Quicker Link，打开 App 查看"
+    }
