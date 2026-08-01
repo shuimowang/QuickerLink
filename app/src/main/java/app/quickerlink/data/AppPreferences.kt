@@ -132,6 +132,10 @@ class AppPreferences(context: Context) : QuickerPreferences {
             KEY_BACKGROUND_CONNECTION,
             DEFAULT_BACKGROUND_CONNECTION_ENABLED,
         ),
+        receiptCueEnabled = preferences.getBoolean(
+            KEY_RECEIPT_CUE,
+            DEFAULT_RECEIPT_CUE_ENABLED,
+        ),
     )
 
     @SuppressLint("ApplySharedPref", "UseKtx")
@@ -139,6 +143,7 @@ class AppPreferences(context: Context) : QuickerPreferences {
         val saved = try {
             preferences.edit()
                 .putBoolean(KEY_BACKGROUND_CONNECTION, settings.backgroundConnectionEnabled)
+                .putBoolean(KEY_RECEIPT_CUE, settings.receiptCueEnabled)
                 .commit()
         } catch (error: Exception) {
             return PreferenceWriteResult.Failure("无法保存增强功能设置", error)
@@ -202,6 +207,7 @@ class AppPreferences(context: Context) : QuickerPreferences {
         const val KEY_PASSWORD = "password_v1"
         const val KEY_ACTIONS = "saved_actions_v1"
         const val KEY_BACKGROUND_CONNECTION = "background_connection_v1"
+        const val KEY_RECEIPT_CUE = "receipt_cue_v1"
         const val LEGACY_KEY_CLIPBOARD_SYNC = "clipboard_sync_v1"
         const val KEY_ALIAS = "quicker_link_connection_password_v1"
         const val ANDROID_KEY_STORE = "AndroidKeyStore"

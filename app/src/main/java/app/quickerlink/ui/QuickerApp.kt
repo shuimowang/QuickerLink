@@ -357,6 +357,7 @@ fun QuickerApp(
                         }
                     }
                 },
+                onReceiptCueChanged = viewModel::setReceiptCueEnabled,
                 onOpenAppSettings = onOpenAppSettings,
                 onClearLogs = viewModel::clearLogs,
             )
@@ -1795,6 +1796,7 @@ private fun ConnectionScreen(
     notificationPermissionPermanentlyDenied: Boolean,
     onRequestNotificationPermission: () -> Unit,
     onBackgroundConnectionChanged: (Boolean) -> Unit,
+    onReceiptCueChanged: (Boolean) -> Unit,
     onOpenAppSettings: () -> Unit,
     onClearLogs: () -> Unit,
 ) {
@@ -1877,10 +1879,18 @@ private fun ConnectionScreen(
                         onRequestNotificationPermission
                     },
                 )
+                ReceiptCueRow(
+                    checked = state.receiptCueEnabled,
+                    onCheckedChange = onReceiptCueChanged,
+                )
             }
         }
 
         state.backgroundConnectionError?.let { error ->
+            item { ConnectionErrorRow(error) }
+        }
+
+        state.receiptCueError?.let { error ->
             item { ConnectionErrorRow(error) }
         }
 
@@ -2147,6 +2157,46 @@ private fun BackgroundConnectionRow(
                 Text(if (notificationPermissionPermanentlyDenied) "打开通知设置" else "允许电脑通知")
             }
         }
+    }
+}
+
+@Composable
+private fun ReceiptCueRow(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            )
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = "接收提示音",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = if (checked) {
+                    "收到电脑文本、通知或文件时播放轻提示音"
+                } else {
+                    "已关闭；接收内容时保持静音"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 

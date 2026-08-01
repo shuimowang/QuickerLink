@@ -1,6 +1,5 @@
 package app.quickerlink.notification
 
-import android.app.NotificationManager
 import android.media.AudioManager
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -18,33 +17,33 @@ class ReceiptCuePlayerTest {
     }
 
     @Test
-    fun `plays only on an audible notification stream outside do not disturb`() {
+    fun `plays only on an audible unmuted notification stream`() {
         assertTrue(
             shouldPlayReceiptCue(
                 AudioManager.RINGER_MODE_NORMAL,
                 notificationVolume = 1,
-                NotificationManager.INTERRUPTION_FILTER_ALL,
+                notificationStreamMuted = false,
             ),
         )
         assertFalse(
             shouldPlayReceiptCue(
                 AudioManager.RINGER_MODE_SILENT,
                 notificationVolume = 1,
-                NotificationManager.INTERRUPTION_FILTER_ALL,
+                notificationStreamMuted = false,
             ),
         )
         assertFalse(
             shouldPlayReceiptCue(
                 AudioManager.RINGER_MODE_NORMAL,
                 notificationVolume = 0,
-                NotificationManager.INTERRUPTION_FILTER_ALL,
+                notificationStreamMuted = false,
             ),
         )
         assertFalse(
             shouldPlayReceiptCue(
                 AudioManager.RINGER_MODE_NORMAL,
                 notificationVolume = 1,
-                NotificationManager.INTERRUPTION_FILTER_PRIORITY,
+                notificationStreamMuted = true,
             ),
         )
     }

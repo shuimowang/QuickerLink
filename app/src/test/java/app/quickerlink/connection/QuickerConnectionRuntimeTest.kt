@@ -1,7 +1,9 @@
 package app.quickerlink.connection
 
 import app.quickerlink.data.FeatureSettings
+import app.quickerlink.notification.ReceiptCueOutcome
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -11,6 +13,22 @@ class QuickerConnectionRuntimeTest {
         val settings = FeatureSettings()
 
         assertTrue(settings.backgroundConnectionEnabled)
+    }
+
+    @Test
+    fun `receipt cue defaults on and setting gates all accepted receipt types`() {
+        val settings = FeatureSettings()
+
+        assertTrue(settings.receiptCueEnabled)
+        listOf(
+            ReceiptCueOutcome.TEXT_ACCEPTED,
+            ReceiptCueOutcome.NOTIFICATION_ACCEPTED,
+            ReceiptCueOutcome.FILE_OFFER_ACCEPTED,
+        ).forEach { outcome ->
+            assertTrue(shouldRequestReceiptCue(receiptCueEnabled = true, outcome))
+            assertFalse(shouldRequestReceiptCue(receiptCueEnabled = false, outcome))
+        }
+        assertFalse(shouldRequestReceiptCue(true, ReceiptCueOutcome.REJECTED))
     }
 
     @Test

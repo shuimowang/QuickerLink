@@ -31,6 +31,7 @@ import app.quickerlink.connection.compactLogText
 import app.quickerlink.connection.QuickerWebSocketEndpointProbe
 import app.quickerlink.data.AppPreferences
 import app.quickerlink.data.DEFAULT_BACKGROUND_CONNECTION_ENABLED
+import app.quickerlink.data.DEFAULT_RECEIPT_CUE_ENABLED
 import app.quickerlink.data.PreferenceWriteResult
 import app.quickerlink.data.QuickerPreferences
 import app.quickerlink.data.SavedAction
@@ -158,6 +159,8 @@ data class QuickerUiState(
     val localNetworkPermissionPermanentlyDenied: Boolean = false,
     val backgroundConnectionEnabled: Boolean = DEFAULT_BACKGROUND_CONNECTION_ENABLED,
     val backgroundConnectionError: String? = null,
+    val receiptCueEnabled: Boolean = DEFAULT_RECEIPT_CUE_ENABLED,
+    val receiptCueError: String? = null,
     val savedActions: List<SavedAction> = emptyList(),
     val catalogActionId: String = QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
     val syncingPanelActions: Boolean = false,
@@ -463,6 +466,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             password = knownGoodConnection.password,
             rememberPassword = knownGoodConnection.rememberPassword,
             backgroundConnectionEnabled = connectionRuntime.backgroundConnectionEnabled.value,
+            receiptCueEnabled = connectionRuntime.receiptCueEnabled.value,
             savedActions = preferences.loadActions(),
             catalogActionId = knownGoodConnection.serviceActionId
                 ?: QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
@@ -506,6 +510,11 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             connectionRuntime.backgroundConnectionEnabled.collect { enabled ->
                 mutableUiState.update { it.copy(backgroundConnectionEnabled = enabled) }
+            }
+        }
+        viewModelScope.launch {
+            connectionRuntime.receiptCueEnabled.collect { enabled ->
+                mutableUiState.update { it.copy(receiptCueEnabled = enabled) }
             }
         }
     }
@@ -612,6 +621,22 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
             is PreferenceWriteResult.Failure -> {
                 mutableUiState.update { it.copy(backgroundConnectionError = result.message) }
+                mutableNotices.tryEmit(UiNotice.Error(result.message))
+            }
+        }
+    }
+
+    fun setReceiptCueEnabled(enabled: Boolean) {
+        when (val result = connectionRuntime.setReceiptCueEnabled(enabled)) {
+            PreferenceWriteResult.Success -> {
+                mutableUiState.update { it.copy(receiptCueError = null) }
+                mutableNotices.tryEmit(
+                    UiNotice.Success(if (enabled) "接收提示音已开启" else "接收提示音已关闭"),
+                )
+            }
+
+            is PreferenceWriteResult.Failure -> {
+                mutableUiState.update { it.copy(receiptCueError = result.message) }
                 mutableNotices.tryEmit(UiNotice.Error(result.message))
             }
         }

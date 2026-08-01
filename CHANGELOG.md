@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.5.0-alpha.5] - 2026-08-02
+
+### Added
+
+- Add a persisted, default-on “接收提示音” switch below the notification controls
+
+### Fixed
+
+- Replace the barely audible legacy acknowledgement tone with a preloaded 140 ms bundled cue that is consistent across Android devices
+- Keep receipt cues silent when the phone is in silent or vibration mode, the notification stream is muted, or its volume is zero
+
 ## [0.5.0-alpha.4] - 2026-08-02
 
 ### Added

@@ -31,6 +31,8 @@ data class StoredConnection(
 
 data class FeatureSettings(
     val backgroundConnectionEnabled: Boolean = DEFAULT_BACKGROUND_CONNECTION_ENABLED,
+    val receiptCueEnabled: Boolean = DEFAULT_RECEIPT_CUE_ENABLED,
 )
 
 const val DEFAULT_BACKGROUND_CONNECTION_ENABLED = true
+const val DEFAULT_RECEIPT_CUE_ENABLED = true

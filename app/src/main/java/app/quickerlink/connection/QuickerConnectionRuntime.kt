@@ -64,9 +64,13 @@ class QuickerConnectionRuntime(context: Context) {
     private val mutableBackgroundConnectionEnabled = MutableStateFlow(
         preferences.loadFeatureSettings().backgroundConnectionEnabled,
     )
+    private val mutableReceiptCueEnabled = MutableStateFlow(
+        preferences.loadFeatureSettings().receiptCueEnabled,
+    )
 
     val backgroundConnectionEnabled: StateFlow<Boolean> =
         mutableBackgroundConnectionEnabled.asStateFlow()
+    val receiptCueEnabled: StateFlow<Boolean> = mutableReceiptCueEnabled.asStateFlow()
 
     private val mutableEvents = MutableSharedFlow<QuickerConnectionRuntimeEvent>(
         extraBufferCapacity = 64,
@@ -119,6 +123,18 @@ class QuickerConnectionRuntime(context: Context) {
         val result = preferences.saveFeatureSettings(current.copy(backgroundConnectionEnabled = enabled))
         when (result) {
             PreferenceWriteResult.Success -> mutableBackgroundConnectionEnabled.value = enabled
+            is PreferenceWriteResult.Failure -> Unit
+        }
+        result
+    }
+
+    fun setReceiptCueEnabled(enabled: Boolean): PreferenceWriteResult = synchronized(settingsLock) {
+        if (mutableReceiptCueEnabled.value == enabled) return PreferenceWriteResult.Success
+
+        val current = preferences.loadFeatureSettings()
+        val result = preferences.saveFeatureSettings(current.copy(receiptCueEnabled = enabled))
+        when (result) {
+            PreferenceWriteResult.Success -> mutableReceiptCueEnabled.value = enabled
             is PreferenceWriteResult.Failure -> Unit
         }
         result
@@ -206,10 +222,7 @@ class QuickerConnectionRuntime(context: Context) {
                         published = published,
                     ),
                 )
-                ReceiptCuePlayer.play(
-                    applicationContext,
-                    ReceiptCueOutcome.NOTIFICATION_ACCEPTED,
-                )
+                playReceiptCue(ReceiptCueOutcome.NOTIFICATION_ACCEPTED)
             }
 
             is QuickerMobilePush.FileOffer -> {
@@ -241,10 +254,7 @@ class QuickerConnectionRuntime(context: Context) {
                 mutableEvents.tryEmit(
                     QuickerConnectionRuntimeEvent.FileOffered(push.descriptor.name),
                 )
-                ReceiptCuePlayer.play(
-                    applicationContext,
-                    ReceiptCueOutcome.FILE_OFFER_ACCEPTED,
-                )
+                playReceiptCue(ReceiptCueOutcome.FILE_OFFER_ACCEPTED)
             }
         }
     }
@@ -275,7 +285,13 @@ class QuickerConnectionRuntime(context: Context) {
             )
         }
         mutableEvents.tryEmit(QuickerConnectionRuntimeEvent.TextReceived(text, source))
-        ReceiptCuePlayer.play(applicationContext, ReceiptCueOutcome.TEXT_ACCEPTED)
+        playReceiptCue(ReceiptCueOutcome.TEXT_ACCEPTED)
+    }
+
+    private fun playReceiptCue(outcome: ReceiptCueOutcome) {
+        if (shouldRequestReceiptCue(mutableReceiptCueEnabled.value, outcome)) {
+            ReceiptCuePlayer.play(applicationContext, outcome)
+        }
     }
 
     private companion object {
@@ -287,6 +303,11 @@ internal fun shouldRetainConnection(
     appInForeground: Boolean,
     backgroundConnectionEnabled: Boolean,
 ): Boolean = appInForeground || backgroundConnectionEnabled
+
+internal fun shouldRequestReceiptCue(
+    receiptCueEnabled: Boolean,
+    outcome: ReceiptCueOutcome,
+): Boolean = receiptCueEnabled && outcome.playsCue
 
 internal fun normalizeIncomingDesktopText(text: String): String =
     if (text.startsWith(DESKTOP_TEXT_PREFIX, ignoreCase = true)) {

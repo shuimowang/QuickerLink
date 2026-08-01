@@ -7,6 +7,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import app.quickerlink.connection.QuickerConnectionRuntime
 import app.quickerlink.connection.QuickerIconPolicy
+import app.quickerlink.notification.ReceiptCuePlayer
 import coil3.ImageLoader
 import coil3.SingletonImageLoader
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
@@ -20,6 +21,7 @@ class QuickerLinkApplication : Application(), SingletonImageLoader.Factory, Defa
 
     override fun onCreate() {
         super<Application>.onCreate()
+        ReceiptCuePlayer.prepare(this)
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
     }
 
