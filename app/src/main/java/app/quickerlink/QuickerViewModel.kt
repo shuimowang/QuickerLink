@@ -1,12 +1,7 @@
 package app.quickerlink
 
 import android.app.Application
-import android.content.ClipData
-import android.content.ClipDescription
-import android.content.ClipboardManager
-import android.content.Context
 import android.net.Uri
-import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.quickerlink.connection.QuickerConnectionConfig
@@ -163,8 +158,6 @@ data class QuickerUiState(
     val localNetworkPermissionPermanentlyDenied: Boolean = false,
     val backgroundConnectionEnabled: Boolean = DEFAULT_BACKGROUND_CONNECTION_ENABLED,
     val backgroundConnectionError: String? = null,
-    val clipboardSyncEnabled: Boolean = false,
-    val clipboardSyncError: String? = null,
     val savedActions: List<SavedAction> = emptyList(),
     val catalogActionId: String = QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
     val syncingPanelActions: Boolean = false,
@@ -444,8 +437,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     private val subnetProvider = AndroidIpv4SubnetProvider(application)
     private val lanDiscovery = QuickerLanDiscovery(QuickerWebSocketEndpointProbe())
     private val transferStore = AndroidTransferStore(application)
-    private val clipboardManager = application.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    private val clipboardSyncGuard = connectionRuntime.clipboardSyncGuard
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
     private val runningActionsLock = Any()
 
@@ -457,9 +448,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     private var verifiedCapabilitiesTarget: QuickerLinkTarget? = null
     private var appInForeground = false
     private var discoveryJob: Job? = null
-    private var clipboardDebounceJob: Job? = null
-    private var clipboardPollJob: Job? = null
-    private var clipboardListener: ClipboardManager.OnPrimaryClipChangedListener? = null
     private var syncPanelActionsAfterConnect = false
     private var toolboxJob: Job? = null
     private var activeTransferId: String? = null
@@ -475,7 +463,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             password = knownGoodConnection.password,
             rememberPassword = knownGoodConnection.rememberPassword,
             backgroundConnectionEnabled = connectionRuntime.backgroundConnectionEnabled.value,
-            clipboardSyncEnabled = connectionRuntime.clipboardSyncEnabled.value,
             savedActions = preferences.loadActions(),
             catalogActionId = knownGoodConnection.serviceActionId
                 ?: QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
@@ -519,12 +506,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             connectionRuntime.backgroundConnectionEnabled.collect { enabled ->
                 mutableUiState.update { it.copy(backgroundConnectionEnabled = enabled) }
-            }
-        }
-        viewModelScope.launch {
-            connectionRuntime.clipboardSyncEnabled.collect { enabled ->
-                mutableUiState.update { it.copy(clipboardSyncEnabled = enabled) }
-                refreshClipboardSync()
             }
         }
     }
@@ -588,13 +569,11 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     fun onAppForegrounded() {
         appInForeground = true
         resumeConnectionIfEligible()
-        refreshClipboardSync()
     }
 
     fun onAppBackgrounded() {
         appInForeground = false
         cancelDiscovery()
-        stopClipboardSync()
         if (
             connectionSession.onBackground(connectionManager.state.value) &&
             !connectionRuntime.shouldRetainConnection()
@@ -633,28 +612,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
             is PreferenceWriteResult.Failure -> {
                 mutableUiState.update { it.copy(backgroundConnectionError = result.message) }
-                mutableNotices.tryEmit(UiNotice.Error(result.message))
-            }
-        }
-    }
-
-    fun setClipboardSyncEnabled(enabled: Boolean) {
-        when (val result = connectionRuntime.setClipboardSyncEnabled(enabled)) {
-            PreferenceWriteResult.Success -> {
-                mutableUiState.update {
-                    it.copy(clipboardSyncError = null)
-                }
-                if (enabled) {
-                    refreshClipboardSync()
-                    mutableNotices.tryEmit(UiNotice.Success("前台剪贴板同步已开启"))
-                } else {
-                    stopClipboardSync(resetGuard = true)
-                    mutableNotices.tryEmit(UiNotice.Success("剪贴板同步已关闭"))
-                }
-            }
-
-            is PreferenceWriteResult.Failure -> {
-                mutableUiState.update { it.copy(clipboardSyncError = result.message) }
                 mutableNotices.tryEmit(UiNotice.Error(result.message))
             }
         }
@@ -835,7 +792,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
         connectionSession.onUserDisconnect()
         syncPanelActionsAfterConnect = false
-        stopClipboardSync(resetGuard = true)
         connectionRuntime.clearIncomingFileOffer()
         mutableUiState.update { it.copy(connectionError = null) }
         connectionManager.disconnect()
@@ -917,7 +873,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                         linkCapabilities = catalog.capabilities,
                     )
                 }
-                refreshClipboardSync()
                 mutableNotices.emit(
                     UiNotice.Success("已同步 ${catalog.actions.size} 个全局与通用动作"),
                 )
@@ -2085,7 +2040,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
             else -> Unit
         }
-        refreshClipboardSync()
     }
 
     private suspend fun persistAuthenticatedConnection() {
@@ -2118,9 +2072,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             verifiedTarget = verifiedCapabilitiesTarget,
             requestedTarget = requestedTarget,
         )
-        if (!keepCapabilities) {
-            stopClipboardSync(resetGuard = true)
-        }
         mutableUiState.update {
             it.copy(
                 linkCapabilities = it.linkCapabilities.takeIf { keepCapabilities },
@@ -2156,141 +2107,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 state
             }
-        }
-    }
-
-    private fun refreshClipboardSync() {
-        if (!clipboardSyncEligible()) {
-            stopClipboardSync()
-            return
-        }
-        if (clipboardListener == null) {
-            val listener = ClipboardManager.OnPrimaryClipChangedListener {
-                clipboardSyncGuard.markPhoneClipboardChanged()
-                schedulePhoneClipboardSync()
-            }
-            clipboardListener = listener
-            clipboardManager.addPrimaryClipChangedListener(listener)
-        }
-        if (clipboardPollJob?.isActive != true) {
-            clipboardPollJob = viewModelScope.launch {
-                delay(CLIPBOARD_INITIAL_POLL_DELAY_MS)
-                while (isActive && clipboardSyncEligible()) {
-                    if (toolboxJob?.isActive != true) {
-                        syncComputerClipboardOnce()
-                    }
-                    delay(CLIPBOARD_POLL_INTERVAL_MS)
-                }
-            }
-        }
-    }
-
-    private fun clipboardSyncEligible(): Boolean {
-        val state = mutableUiState.value
-        val capabilities = state.linkCapabilities
-        return appInForeground &&
-            connectionRuntime.clipboardSyncEnabled.value &&
-            state.connectionState is QuickerConnectionState.Ready &&
-            capabilities?.clipboardRead == true &&
-            capabilities.clipboardWrite
-    }
-
-    private fun stopClipboardSync(resetGuard: Boolean = false) {
-        clipboardDebounceJob?.cancel()
-        clipboardDebounceJob = null
-        clipboardPollJob?.cancel()
-        clipboardPollJob = null
-        clipboardListener?.let { listener ->
-            runCatching { clipboardManager.removePrimaryClipChangedListener(listener) }
-        }
-        clipboardListener = null
-        if (resetGuard) clipboardSyncGuard.reset()
-    }
-
-    private fun schedulePhoneClipboardSync() {
-        if (!clipboardSyncEligible()) return
-        clipboardDebounceJob?.cancel()
-        clipboardDebounceJob = viewModelScope.launch {
-            delay(CLIPBOARD_DEBOUNCE_MS)
-            val text = readPhoneClipboardText() ?: return@launch
-            val fingerprint = clipboardSyncGuard.phoneCandidate(text) ?: return@launch
-            val connection = connectionManager.currentReadyConnectionBinding() ?: return@launch
-            try {
-                requestToolbox(
-                    command = QuickerToolboxProtocol.clipboardWriteCommand(text),
-                    expectedOperation = QuickerToolboxProtocol.OP_CLIPBOARD_WRITE,
-                    logRequest = false,
-                    timeoutMs = CLIPBOARD_SYNC_TIMEOUT_MS,
-                    expectedConnection = connection,
-                )
-                clipboardSyncGuard.markPhoneSent(fingerprint)
-                mutableUiState.update { it.copy(clipboardSyncError = null) }
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (error: Exception) {
-                setClipboardSyncError(error, "同步到电脑失败")
-            }
-        }
-    }
-
-    private suspend fun syncComputerClipboardOnce() {
-        val connection = connectionManager.currentReadyConnectionBinding() ?: return
-        val readToken = clipboardSyncGuard.beginComputerRead()
-        try {
-            val result = requestToolbox(
-                command = QuickerToolboxProtocol.clipboardReadCommand(),
-                expectedOperation = QuickerToolboxProtocol.OP_CLIPBOARD_READ,
-                logRequest = false,
-                timeoutMs = CLIPBOARD_SYNC_TIMEOUT_MS,
-                expectedConnection = connection,
-            ) as QuickerToolboxResult.Clipboard
-            val text = result.text.takeIf(::isClipboardSyncText) ?: return
-            val fingerprint = clipboardSyncGuard.computerCandidate(text, readToken) ?: return
-            if (!writePhoneClipboard("Quicker Link 同步", text)) {
-                clipboardSyncGuard.markComputerApplyFailed(fingerprint)
-                setClipboardSyncError(null, "手机剪贴板暂不可用")
-                return
-            }
-            mutableUiState.update { it.copy(clipboardSyncError = null) }
-        } catch (cancellation: CancellationException) {
-            throw cancellation
-        } catch (error: Exception) {
-            setClipboardSyncError(error, "读取电脑剪贴板失败")
-        }
-    }
-
-    private fun readPhoneClipboardText(): String? = runCatching {
-        val clip = clipboardManager.primaryClip ?: return@runCatching null
-        if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            clip.description.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true
-        ) {
-            return@runCatching null
-        }
-        clip.takeIf { it.itemCount > 0 }
-            ?.getItemAt(0)
-            ?.text
-            ?.toString()
-            ?.takeIf(::isClipboardSyncText)
-    }.getOrNull()
-
-    private fun isClipboardSyncText(text: String): Boolean = runCatching {
-        QuickerToolboxProtocol.clipboardWriteCommand(text)
-    }.isSuccess
-
-    private fun writePhoneClipboard(label: String, text: String): Boolean {
-        val fingerprint = clipboardSyncGuard.markComputerApplied(text)
-        return runCatching {
-            clipboardManager.setPrimaryClip(ClipData.newPlainText(label, text))
-        }.onFailure {
-            clipboardSyncGuard.markComputerApplyFailed(fingerprint)
-        }.isSuccess
-    }
-
-    private fun setClipboardSyncError(error: Exception?, fallback: String) {
-        val message = boundedUiErrorMessage(error?.message, fallback)
-        mutableUiState.update { state ->
-            if (state.clipboardSyncError == message) state else state.copy(clipboardSyncError = message)
         }
     }
 
@@ -2347,7 +2163,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             )
         activeLinkTarget = target
         if (!shouldKeepLinkCapabilities(verifiedCapabilitiesTarget, target)) {
-            stopClipboardSync(resetGuard = true)
             mutableUiState.update { it.copy(linkCapabilities = null) }
         }
 
@@ -2390,7 +2205,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     override fun onCleared() {
         discoveryJob?.cancel()
         toolboxJob?.cancel()
-        stopClipboardSync(resetGuard = true)
         updateChecker.close()
         updateDownloader.close()
         if (!connectionRuntime.shouldRetainConnection()) {
@@ -2406,10 +2220,6 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         const val FILE_PICK_TIMEOUT_MS = 5 * 60_000L
         const val FILE_RECONNECT_TIMEOUT_MS = 20_000L
         const val REMOTE_CLEANUP_TIMEOUT_MS = 5_000L
-        const val CLIPBOARD_INITIAL_POLL_DELAY_MS = 500L
-        const val CLIPBOARD_DEBOUNCE_MS = 500L
-        const val CLIPBOARD_POLL_INTERVAL_MS = 3_000L
-        const val CLIPBOARD_SYNC_TIMEOUT_MS = 10_000L
     }
 }
 

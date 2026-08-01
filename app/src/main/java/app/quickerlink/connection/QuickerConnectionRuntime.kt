@@ -6,6 +6,8 @@ import android.content.Context
 import app.quickerlink.data.AppPreferences
 import app.quickerlink.data.PreferenceWriteResult
 import app.quickerlink.notification.MobileNotificationPublisher
+import app.quickerlink.notification.ReceiptCuePlayer
+import app.quickerlink.notification.ReceiptCueOutcome
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -52,7 +54,6 @@ internal data class QuickerIncomingFileOffer(
 
 class QuickerConnectionRuntime(context: Context) {
     val manager = QuickerConnectionManager()
-    internal val clipboardSyncGuard = ClipboardSyncGuard()
 
     private val applicationContext = context.applicationContext
     private val preferences = AppPreferences(applicationContext)
@@ -63,13 +64,9 @@ class QuickerConnectionRuntime(context: Context) {
     private val mutableBackgroundConnectionEnabled = MutableStateFlow(
         preferences.loadFeatureSettings().backgroundConnectionEnabled,
     )
-    private val mutableClipboardSyncEnabled = MutableStateFlow(
-        preferences.loadFeatureSettings().clipboardSyncEnabled,
-    )
 
     val backgroundConnectionEnabled: StateFlow<Boolean> =
         mutableBackgroundConnectionEnabled.asStateFlow()
-    val clipboardSyncEnabled: StateFlow<Boolean> = mutableClipboardSyncEnabled.asStateFlow()
 
     private val mutableEvents = MutableSharedFlow<QuickerConnectionRuntimeEvent>(
         extraBufferCapacity = 64,
@@ -127,18 +124,6 @@ class QuickerConnectionRuntime(context: Context) {
         result
     }
 
-    fun setClipboardSyncEnabled(enabled: Boolean): PreferenceWriteResult = synchronized(settingsLock) {
-        if (mutableClipboardSyncEnabled.value == enabled) return PreferenceWriteResult.Success
-
-        val current = preferences.loadFeatureSettings()
-        val result = preferences.saveFeatureSettings(current.copy(clipboardSyncEnabled = enabled))
-        when (result) {
-            PreferenceWriteResult.Success -> mutableClipboardSyncEnabled.value = enabled
-            is PreferenceWriteResult.Failure -> Unit
-        }
-        result
-    }
-
     internal fun clearIncomingFileOffer(expectedId: String): QuickerIncomingFileOffer? {
         val current = mutableIncomingFileOffer.value ?: return null
         if (current.descriptor.id != expectedId) return null
@@ -174,7 +159,7 @@ class QuickerConnectionRuntime(context: Context) {
             manager.replyToCommand(incomingCommand, false, "clipboard_unavailable")
             return
         }
-        manager.replyToCommand(incomingCommand, true, "ok")
+        if (!manager.replyToCommand(incomingCommand, true, "ok")) return
         publishReceivedText(text, "Quicker")
     }
 
@@ -195,11 +180,11 @@ class QuickerConnectionRuntime(context: Context) {
                     return
                 }
                 val copiedToClipboard = writePhoneClipboard("Quicker Link", text)
-                manager.replyToCommand(
+                if (!manager.replyToCommand(
                     incomingCommand,
                     true,
                     if (copiedToClipboard) "ok" else "received",
-                )
+                )) return
                 publishReceivedText(text, "电脑", copiedToClipboard)
             }
 
@@ -209,16 +194,21 @@ class QuickerConnectionRuntime(context: Context) {
                     push.title,
                     push.body,
                 )
-                manager.replyToCommand(
+                val replied = manager.replyToCommand(
                     incomingCommand,
                     published,
                     if (published) "ok" else "notification_permission_required",
                 )
+                if (!replied) return
                 mutableEvents.tryEmit(
                     QuickerConnectionRuntimeEvent.NotificationReceived(
                         bodyLength = push.body.length,
                         published = published,
                     ),
+                )
+                ReceiptCuePlayer.play(
+                    applicationContext,
+                    ReceiptCueOutcome.NOTIFICATION_ACCEPTED,
                 )
             }
 
@@ -237,7 +227,10 @@ class QuickerConnectionRuntime(context: Context) {
                     connection = connection,
                     actionId = companionActionId,
                 )
-                manager.replyToCommand(incomingCommand, true, "offered")
+                if (!manager.replyToCommand(incomingCommand, true, "offered")) {
+                    clearIncomingFileOffer(push.descriptor.id)
+                    return
+                }
                 if (!appInForeground) {
                     MobileNotificationPublisher.publish(
                         applicationContext,
@@ -247,6 +240,10 @@ class QuickerConnectionRuntime(context: Context) {
                 }
                 mutableEvents.tryEmit(
                     QuickerConnectionRuntimeEvent.FileOffered(push.descriptor.name),
+                )
+                ReceiptCuePlayer.play(
+                    applicationContext,
+                    ReceiptCueOutcome.FILE_OFFER_ACCEPTED,
                 )
             }
         }
@@ -258,11 +255,8 @@ class QuickerConnectionRuntime(context: Context) {
             text.toByteArray(Charsets.UTF_8).size <= MAX_INCOMING_TEXT_BYTES
 
     private fun writePhoneClipboard(label: String, text: String): Boolean {
-        val fingerprint = clipboardSyncGuard.markComputerApplied(text)
         return runCatching {
             clipboardManager.setPrimaryClip(ClipData.newPlainText(label, text))
-        }.onFailure {
-            clipboardSyncGuard.markComputerApplyFailed(fingerprint)
         }.isSuccess
     }
 
@@ -281,6 +275,7 @@ class QuickerConnectionRuntime(context: Context) {
             )
         }
         mutableEvents.tryEmit(QuickerConnectionRuntimeEvent.TextReceived(text, source))
+        ReceiptCuePlayer.play(applicationContext, ReceiptCueOutcome.TEXT_ACCEPTED)
     }
 
     private companion object {

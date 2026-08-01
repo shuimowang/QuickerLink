@@ -31,7 +31,6 @@ data class StoredConnection(
 
 data class FeatureSettings(
     val backgroundConnectionEnabled: Boolean = DEFAULT_BACKGROUND_CONNECTION_ENABLED,
-    val clipboardSyncEnabled: Boolean = false,
 )
 
 const val DEFAULT_BACKGROUND_CONNECTION_ENABLED = true

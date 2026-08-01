@@ -43,6 +43,12 @@ class AppPreferences(context: Context) : QuickerPreferences {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val gson = Gson()
 
+    init {
+        if (preferences.contains(LEGACY_KEY_CLIPBOARD_SYNC)) {
+            preferences.edit { remove(LEGACY_KEY_CLIPBOARD_SYNC) }
+        }
+    }
+
     override fun loadConnection(): StoredConnection {
         // New installations default to seamless reconnect; an explicit opt-out is persisted as false.
         val rememberPassword = preferences.getBoolean(KEY_REMEMBER_PASSWORD, true)
@@ -126,7 +132,6 @@ class AppPreferences(context: Context) : QuickerPreferences {
             KEY_BACKGROUND_CONNECTION,
             DEFAULT_BACKGROUND_CONNECTION_ENABLED,
         ),
-        clipboardSyncEnabled = preferences.getBoolean(KEY_CLIPBOARD_SYNC, false),
     )
 
     @SuppressLint("ApplySharedPref", "UseKtx")
@@ -134,7 +139,6 @@ class AppPreferences(context: Context) : QuickerPreferences {
         val saved = try {
             preferences.edit()
                 .putBoolean(KEY_BACKGROUND_CONNECTION, settings.backgroundConnectionEnabled)
-                .putBoolean(KEY_CLIPBOARD_SYNC, settings.clipboardSyncEnabled)
                 .commit()
         } catch (error: Exception) {
             return PreferenceWriteResult.Failure("无法保存增强功能设置", error)
@@ -198,7 +202,7 @@ class AppPreferences(context: Context) : QuickerPreferences {
         const val KEY_PASSWORD = "password_v1"
         const val KEY_ACTIONS = "saved_actions_v1"
         const val KEY_BACKGROUND_CONNECTION = "background_connection_v1"
-        const val KEY_CLIPBOARD_SYNC = "clipboard_sync_v1"
+        const val LEGACY_KEY_CLIPBOARD_SYNC = "clipboard_sync_v1"
         const val KEY_ALIAS = "quicker_link_connection_password_v1"
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"

@@ -45,6 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.quickerlink.AppUpdateState
+import app.quickerlink.BuildConfig
 import app.quickerlink.QuickerUiState
 import app.quickerlink.R
 
@@ -77,7 +78,12 @@ internal fun AboutScreen(
         ),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item { BrandHeader(state.appVersionName) }
+        item {
+            BrandHeader(
+                versionName = state.appVersionName,
+                iteration = BuildConfig.VERSION_CODE,
+            )
+        }
         item { HorizontalDivider() }
         item { AboutSectionTitle("更新") }
         item {
@@ -153,7 +159,10 @@ internal fun AboutScreen(
 }
 
 @Composable
-private fun BrandHeader(versionName: String) {
+private fun BrandHeader(
+    versionName: String,
+    iteration: Int,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -185,7 +194,7 @@ private fun BrandHeader(versionName: String) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "困困君 发布",
+                "已迭代 $iteration 次 · 困困君持续打磨",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary,
             )

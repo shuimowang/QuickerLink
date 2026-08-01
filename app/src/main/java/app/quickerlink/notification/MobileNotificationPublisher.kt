@@ -49,6 +49,7 @@ object MobileNotificationPublisher {
                 .setContentText(body)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(body))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setSilent(true)
                 .setContentIntent(openApp)
                 .setAutoCancel(true)
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
@@ -60,16 +61,27 @@ object MobileNotificationPublisher {
 
     private fun createChannel(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                "电脑通知",
-                NotificationManager.IMPORTANCE_HIGH,
-            ).apply {
-                description = "Quicker 从电脑发送到手机的通知"
-            },
-        )
+        if (manager.getNotificationChannel(CHANNEL_ID) == null) {
+            val legacyChannel = manager.getNotificationChannel(LEGACY_CHANNEL_ID)
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID,
+                    "电脑通知",
+                    legacyChannel?.importance ?: NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = "Quicker 从电脑发送到手机的通知"
+                    setSound(null, null)
+                    enableVibration(false)
+                    legacyChannel?.let {
+                        lockscreenVisibility = it.lockscreenVisibility
+                        setShowBadge(it.canShowBadge())
+                    }
+                },
+            )
+        }
+        manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
     }
 
-    private const val CHANNEL_ID = "quicker_link_desktop_messages"
+    private const val CHANNEL_ID = "quicker_link_desktop_messages_silent_v2"
+    private const val LEGACY_CHANNEL_ID = "quicker_link_desktop_messages"
 }

@@ -2,17 +2,15 @@ package app.quickerlink.connection
 
 import app.quickerlink.data.FeatureSettings
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class QuickerConnectionRuntimeTest {
     @Test
-    fun `background receive defaults on while clipboard sync remains opt in`() {
+    fun `background receive defaults on`() {
         val settings = FeatureSettings()
 
         assertTrue(settings.backgroundConnectionEnabled)
-        assertFalse(settings.clipboardSyncEnabled)
     }
 
     @Test

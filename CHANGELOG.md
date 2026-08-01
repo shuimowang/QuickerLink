@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.5.0-alpha.4] - 2026-08-02
+
+### Added
+
+- Play one low-volume receipt cue for accepted desktop text, notifications, and file offers while respecting silent mode, notification volume, and Do Not Disturb
+
+### Changed
+
+- Remove built-in continuous clipboard synchronization, its UI setting, polling, listener, and echo guard while retaining explicit transfer-page computer clipboard reads and writes
+- Document user-owned Quicker clipboard-change automations as an optional way to call `Quicker Link` with `sendText:{text}`
+- Show the APK build iteration in About so the displayed count stays aligned with `versionCode`
+
 ## [0.5.0-alpha.3] - 2026-08-01
 
 ### Changed

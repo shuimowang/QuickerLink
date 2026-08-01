@@ -357,7 +357,6 @@ fun QuickerApp(
                         }
                     }
                 },
-                onClipboardSyncChanged = viewModel::setClipboardSyncEnabled,
                 onOpenAppSettings = onOpenAppSettings,
                 onClearLogs = viewModel::clearLogs,
             )
@@ -1796,7 +1795,6 @@ private fun ConnectionScreen(
     notificationPermissionPermanentlyDenied: Boolean,
     onRequestNotificationPermission: () -> Unit,
     onBackgroundConnectionChanged: (Boolean) -> Unit,
-    onClipboardSyncChanged: (Boolean) -> Unit,
     onOpenAppSettings: () -> Unit,
     onClearLogs: () -> Unit,
 ) {
@@ -1879,19 +1877,10 @@ private fun ConnectionScreen(
                         onRequestNotificationPermission
                     },
                 )
-                HorizontalDivider()
-                ClipboardSyncRow(
-                    checked = state.clipboardSyncEnabled,
-                    onCheckedChange = onClipboardSyncChanged,
-                )
             }
         }
 
         state.backgroundConnectionError?.let { error ->
-            item { ConnectionErrorRow(error) }
-        }
-
-        state.clipboardSyncError?.let { error ->
             item { ConnectionErrorRow(error) }
         }
 
@@ -2158,46 +2147,6 @@ private fun BackgroundConnectionRow(
                 Text(if (notificationPermissionPermanentlyDenied) "打开通知设置" else "允许电脑通知")
             }
         }
-    }
-}
-
-@Composable
-private fun ClipboardSyncRow(
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .toggleable(
-                value = checked,
-                role = Role.Switch,
-                onValueChange = onCheckedChange,
-            )
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Text(
-                text = "前台剪贴板同步",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = if (checked) {
-                    "App 可见时双向同步短文本"
-                } else {
-                    "Android 10+ 不允许普通 App 在后台读取剪贴板"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
