@@ -16,6 +16,7 @@ import app.quickerlink.MainActivity
 import app.quickerlink.QuickerLinkApplication
 import app.quickerlink.R
 import app.quickerlink.connection.QuickerConnectionState
+import app.quickerlink.data.PreferenceWriteResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -36,7 +37,12 @@ class QuickerLinkService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            runtime.setBackgroundConnectionEnabled(false)
+            val result = runtime.setBackgroundConnectionEnabled(false)
+            val failure = backgroundServiceStopFailure(result)
+            if (failure != null) {
+                startOrUpdateForeground(QuickerConnectionState.Error(failure))
+                return START_NOT_STICKY
+            }
             if (!runtime.shouldRetainConnection()) runtime.manager.disconnect()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -142,6 +148,11 @@ class QuickerLinkService : Service() {
             context.stopService(Intent(context, QuickerLinkService::class.java))
         }
     }
+}
+
+internal fun backgroundServiceStopFailure(result: PreferenceWriteResult): String? = when (result) {
+    PreferenceWriteResult.Success -> null
+    is PreferenceWriteResult.Failure -> result.message
 }
 
 internal fun notificationText(state: QuickerConnectionState): Pair<String, String> = when (state) {

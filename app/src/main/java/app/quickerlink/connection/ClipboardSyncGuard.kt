@@ -5,6 +5,16 @@ import java.security.MessageDigest
 internal class ClipboardSyncGuard {
     private var synchronizedFingerprint: String? = null
     private var lastComputerFingerprint: String? = null
+    private var phoneClipboardEpoch = 0L
+
+    @Synchronized
+    fun markPhoneClipboardChanged() {
+        advancePhoneClipboardEpoch()
+    }
+
+    @Synchronized
+    fun beginComputerRead(): ComputerClipboardReadToken =
+        ComputerClipboardReadToken(phoneClipboardEpoch)
 
     @Synchronized
     fun phoneCandidate(text: String): String? {
@@ -20,6 +30,16 @@ internal class ClipboardSyncGuard {
 
     @Synchronized
     fun computerCandidate(text: String): String? {
+        return computerCandidateLocked(text)
+    }
+
+    @Synchronized
+    fun computerCandidate(text: String, readToken: ComputerClipboardReadToken): String? {
+        if (readToken.phoneClipboardEpoch != phoneClipboardEpoch) return null
+        return computerCandidateLocked(text)
+    }
+
+    private fun computerCandidateLocked(text: String): String? {
         val fingerprint = clipboardFingerprint(text)
         if (fingerprint == lastComputerFingerprint) return null
         lastComputerFingerprint = fingerprint
@@ -30,6 +50,7 @@ internal class ClipboardSyncGuard {
 
     @Synchronized
     fun markComputerApplied(text: String): String {
+        advancePhoneClipboardEpoch()
         val fingerprint = clipboardFingerprint(text)
         synchronizedFingerprint = fingerprint
         lastComputerFingerprint = fingerprint
@@ -44,10 +65,19 @@ internal class ClipboardSyncGuard {
 
     @Synchronized
     fun reset() {
+        advancePhoneClipboardEpoch()
         synchronizedFingerprint = null
         lastComputerFingerprint = null
     }
+
+    private fun advancePhoneClipboardEpoch() {
+        phoneClipboardEpoch += 1L
+    }
 }
+
+internal class ComputerClipboardReadToken internal constructor(
+    internal val phoneClipboardEpoch: Long,
+)
 
 internal fun clipboardFingerprint(text: String): String = MessageDigest.getInstance("SHA-256")
     .digest(text.toByteArray(Charsets.UTF_8))

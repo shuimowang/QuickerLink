@@ -44,6 +44,12 @@ data class QuickerReceivedText(
     val sequence: Long,
 )
 
+internal data class QuickerIncomingFileOffer(
+    val descriptor: QuickerTransferDescriptor,
+    val connection: QuickerConnectionBinding,
+    val actionId: String,
+)
+
 class QuickerConnectionRuntime(context: Context) {
     val manager = QuickerConnectionManager()
     internal val clipboardSyncGuard = ClipboardSyncGuard()
@@ -71,14 +77,18 @@ class QuickerConnectionRuntime(context: Context) {
     )
     val events: SharedFlow<QuickerConnectionRuntimeEvent> = mutableEvents.asSharedFlow()
 
-    private val mutableIncomingFileOffer = MutableStateFlow<QuickerTransferDescriptor?>(null)
-    val incomingFileOffer: StateFlow<QuickerTransferDescriptor?> =
+    private val mutableIncomingFileOffer = MutableStateFlow<QuickerIncomingFileOffer?>(null)
+    internal val incomingFileOffer: StateFlow<QuickerIncomingFileOffer?> =
         mutableIncomingFileOffer.asStateFlow()
 
     private val mutableReceivedText = MutableStateFlow<QuickerReceivedText?>(null)
     val receivedText: StateFlow<QuickerReceivedText?> = mutableReceivedText.asStateFlow()
 
     private var receivedTextSequence = 0L
+
+    @Volatile
+    private var companionActionId = preferences.loadConnection().serviceActionId
+        ?: QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID
 
     @Volatile
     private var appInForeground = false
@@ -94,6 +104,11 @@ class QuickerConnectionRuntime(context: Context) {
     }
 
     internal fun isAppInForeground(): Boolean = appInForeground
+
+    internal fun setCompanionActionId(actionId: String) {
+        require(actionId.isNotBlank()) { "Quicker Link 动作 ID 不能为空" }
+        companionActionId = actionId
+    }
 
     fun shouldRetainConnection(): Boolean = shouldRetainConnection(
         appInForeground = appInForeground,
@@ -124,9 +139,9 @@ class QuickerConnectionRuntime(context: Context) {
         result
     }
 
-    fun clearIncomingFileOffer(expectedId: String): QuickerTransferDescriptor? {
+    internal fun clearIncomingFileOffer(expectedId: String): QuickerIncomingFileOffer? {
         val current = mutableIncomingFileOffer.value ?: return null
-        if (current.id != expectedId) return null
+        if (current.descriptor.id != expectedId) return null
         mutableIncomingFileOffer.value = null
         return current
     }
@@ -204,7 +219,16 @@ class QuickerConnectionRuntime(context: Context) {
                     manager.replyToCommand(incomingCommand, false, "busy")
                     return
                 }
-                mutableIncomingFileOffer.value = push.descriptor
+                val connection = manager.currentReadyConnectionBinding()
+                if (connection == null || !manager.isCommandCurrent(incomingCommand)) {
+                    manager.replyToCommand(incomingCommand, false, "connection_changed")
+                    return
+                }
+                mutableIncomingFileOffer.value = QuickerIncomingFileOffer(
+                    descriptor = push.descriptor,
+                    connection = connection,
+                    actionId = companionActionId,
+                )
                 manager.replyToCommand(incomingCommand, true, "offered")
                 if (!appInForeground) {
                     MobileNotificationPublisher.publish(

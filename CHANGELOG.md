@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.5.0-alpha.2] - 2026-08-01
+
+### Fixed
+
+- Discard stale computer clipboard reads when the phone clipboard changes before the response arrives
+- Bind screen capture, screen clicks, downloads, cleanup, cancellation, and incoming file offers to their originating computer and companion action
+- Keep WebSocket message serials inside Quicker's positive 32-bit range and reject excess computer-to-phone commands with an explicit busy response
+- Stop automatic retries after certificate-chain or hostname verification failures while retaining reconnects for ordinary network interruptions
+- Handle a speech-recognition service disappearing between capability detection and launch without closing the App
+- Keep the foreground-service notification active when disabling the persisted background setting fails
+
 ## [0.5.0-alpha.1] - 2026-08-01
 
 ### Added

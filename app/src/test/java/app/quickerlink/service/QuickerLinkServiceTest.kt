@@ -1,10 +1,23 @@
 package app.quickerlink.service
 
 import app.quickerlink.connection.QuickerConnectionState
+import app.quickerlink.data.PreferenceWriteResult
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class QuickerLinkServiceTest {
+    @Test
+    fun `background service stops only after disabled state is persisted`() {
+        assertNull(backgroundServiceStopFailure(PreferenceWriteResult.Success))
+        assertEquals(
+            "无法保存增强功能设置",
+            backgroundServiceStopFailure(
+                PreferenceWriteResult.Failure("无法保存增强功能设置"),
+            ),
+        )
+    }
+
     @Test
     fun `disconnected notification prompts user to open the app`() {
         assertEquals(

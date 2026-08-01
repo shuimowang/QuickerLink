@@ -238,7 +238,11 @@ fun QuickerApp(
         } else {
             speechTarget = target
             speechError = null
-            speechLauncher.launch(intent)
+            runCatching { speechLauncher.launch(intent) }
+                .onFailure {
+                    speechTarget = null
+                    speechError = "手机上没有可用的语音识别服务"
+                }
         }
     }
 

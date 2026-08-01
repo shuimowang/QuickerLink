@@ -27,8 +27,12 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import java.net.Proxy
+import java.security.cert.CertPathValidatorException
+import java.security.cert.CertificateException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 import kotlin.math.min
 import kotlin.random.Random
 
@@ -78,8 +82,27 @@ private data class PendingCommand(
     val logResponse: Boolean,
 )
 
+private enum class IncomingCommandDisposition {
+    ACCEPTED,
+    NOT_READY,
+    BUSY,
+}
+
 internal const val MAX_WSS_TEXT_CHARACTERS = 1_024 * 1_024
 internal const val MAX_WSS_TEXT_UTF8_BYTES = 2 * 1_024 * 1_024
+internal const val INCOMING_COMMAND_CAPACITY = 64
+
+internal class PositiveIntSerialGenerator(initialValue: Long = 1L) {
+    init {
+        require(initialValue in 1L..Int.MAX_VALUE.toLong())
+    }
+
+    private val nextValue = AtomicLong(initialValue)
+
+    fun next(): Long = nextValue.getAndUpdate { current ->
+        if (current == Int.MAX_VALUE.toLong()) 1L else current + 1L
+    }
+}
 
 class QuickerIncomingCommand internal constructor(
     val message: QuickerMessage,
@@ -117,7 +140,7 @@ class QuickerConnectionManager private constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private val generation = AtomicLong(0)
-    private val serial = AtomicLong(1)
+    private val serial = PositiveIntSerialGenerator()
     private val pending = mutableMapOf<Long, PendingCommand>()
     private val lock = Any()
 
@@ -128,7 +151,7 @@ class QuickerConnectionManager private constructor(
     val events: SharedFlow<QuickerConnectionEvent> = mutableEvents.asSharedFlow()
 
     private val commandOwner = Any()
-    private val incomingCommands = Channel<QuickerIncomingCommand>(Channel.UNLIMITED)
+    private val incomingCommands = Channel<QuickerIncomingCommand>(INCOMING_COMMAND_CAPACITY)
     val commands: Flow<QuickerIncomingCommand> = incomingCommands.receiveAsFlow()
 
     private var desiredConfig: QuickerConnectionConfig? = null
@@ -345,7 +368,7 @@ class QuickerConnectionManager private constructor(
         val newSocket = runCatching {
             socketFactory.newWebSocket(request, listener(token, config, endpoint))
         }.getOrElse { error ->
-            handleDisconnect(token, error.message ?: "WebSocket 连接失败")
+            handleConnectionFailure(token, error)
             return
         }
         val keepSocket = synchronized(lock) {
@@ -355,7 +378,8 @@ class QuickerConnectionManager private constructor(
                 desiredConfig == config &&
                 connectionState !is QuickerConnectionState.Reconnecting &&
                 connectionState !is QuickerConnectionState.Disconnected &&
-                connectionState !is QuickerConnectionState.AuthFailed
+                connectionState !is QuickerConnectionState.AuthFailed &&
+                connectionState !is QuickerConnectionState.Error
             ) {
                 socket = newSocket
                 true
@@ -483,28 +507,38 @@ class QuickerConnectionManager private constructor(
                 }
 
                 QuickerProtocol.MESSAGE_COMMAND -> {
-                    val accepted = synchronized(lock) {
+                    val disposition = synchronized(lock) {
                         if (!isReadyLocked(token)) {
-                            false
+                            IncomingCommandDisposition.NOT_READY
                         } else {
-                            incomingCommands.trySend(
+                            val queued = incomingCommands.trySend(
                                 QuickerIncomingCommand(
                                     message = message,
                                     owner = commandOwner,
                                     generation = token,
                                 ),
                             ).isSuccess
+                            if (queued) {
+                                IncomingCommandDisposition.ACCEPTED
+                            } else {
+                                IncomingCommandDisposition.BUSY
+                            }
                         }
                     }
-                    if (!accepted) {
-                        emitIgnoredBeforeReady(message.messageType)
-                    } else {
-                        mutableEvents.tryEmit(
-                            QuickerConnectionEvent(
-                                QuickerEventDirection.INCOMING,
-                                "Quicker 发来操作：${message.operation ?: "未知"}",
-                            ),
-                        )
+                    when (disposition) {
+                        IncomingCommandDisposition.NOT_READY ->
+                            emitIgnoredBeforeReady(message.messageType)
+
+                        IncomingCommandDisposition.BUSY ->
+                            rejectBusyCommand(webSocket, token, message)
+
+                        IncomingCommandDisposition.ACCEPTED ->
+                            mutableEvents.tryEmit(
+                                QuickerConnectionEvent(
+                                    QuickerEventDirection.INCOMING,
+                                    "Quicker 发来操作：${message.operation ?: "未知"}",
+                                ),
+                            )
                     }
                 }
 
@@ -539,8 +573,39 @@ class QuickerConnectionManager private constructor(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            val detail = connectionFailureDetail(t, response?.message)
-            handleDisconnect(token, detail)
+            handleConnectionFailure(token, t, response?.message)
+        }
+    }
+
+    private fun rejectBusyCommand(
+        webSocket: WebSocket,
+        token: Long,
+        message: QuickerMessage,
+    ) {
+        mutableEvents.tryEmit(
+            QuickerConnectionEvent(
+                QuickerEventDirection.SYSTEM,
+                "手机命令队列已满，已拒绝 Quicker 发来的操作：${message.operation ?: "未知"}",
+            ),
+        )
+
+        val requestSerial = message.serial ?: return
+        val payload = QuickerProtocol.commandResponse(
+            serial = nextSerial(),
+            replyTo = requestSerial,
+            isSuccess = false,
+            message = "busy",
+        )
+        val shouldReply = synchronized(lock) {
+            isReadyLocked(token) && socket === webSocket
+        }
+        if (shouldReply && !webSocket.send(payload)) {
+            mutableEvents.tryEmit(
+                QuickerConnectionEvent(
+                    QuickerEventDirection.SYSTEM,
+                    "手机命令队列已满，busy 响应发送失败",
+                ),
+            )
         }
     }
 
@@ -643,6 +708,46 @@ class QuickerConnectionManager private constructor(
         return true
     }
 
+    private fun handleConnectionFailure(
+        token: Long,
+        error: Throwable,
+        responseMessage: String? = null,
+    ) {
+        val detail = connectionFailureDetail(error, responseMessage)
+        if (isTlsVerificationFailure(error)) {
+            handleTerminalFailure(token, detail)
+        } else {
+            handleDisconnect(token, detail)
+        }
+    }
+
+    private fun handleTerminalFailure(token: Long, reason: String) {
+        val requestsToFail: List<CompletableDeferred<QuickerMessage>>
+        synchronized(lock) {
+            if (!isCurrentLocked(token)) return
+            generation.incrementAndGet()
+            desiredConfig = null
+            readyGeneration = null
+            authRequestSerial = null
+            retryJob?.cancel()
+            retryJob = null
+            authTimeoutJob?.cancel()
+            authTimeoutJob = null
+            socket = null
+            retryAttempt = 0
+            requestsToFail = drainPendingLocked()
+            discardQueuedCommandsLocked()
+            mutableState.value = QuickerConnectionState.Error(reason)
+        }
+        failRequests(requestsToFail, reason)
+        mutableEvents.tryEmit(
+            QuickerConnectionEvent(
+                QuickerEventDirection.SYSTEM,
+                "连接失败：$reason",
+            ),
+        )
+    }
+
     private fun scheduleReconnect(
         token: Long,
         config: QuickerConnectionConfig,
@@ -712,9 +817,7 @@ class QuickerConnectionManager private constructor(
         requests.forEach { it.completeExceptionally(error) }
     }
 
-    private fun nextSerial(): Long = serial.getAndUpdate { current ->
-        if (current == Long.MAX_VALUE) 1 else current + 1
-    }
+    private fun nextSerial(): Long = serial.next()
 
     private fun emitIgnoredBeforeReady(messageType: Int?) {
         val description = messageType?.let { "消息类型 $it" } ?: "二进制消息"
@@ -781,17 +884,46 @@ internal fun compactLogText(value: String, maxLength: Int = 180): String {
 }
 
 internal fun connectionFailureDetail(error: Throwable, responseMessage: String? = null): String {
-    val causes = generateSequence(error) { it.cause }.take(12).toList()
-    val certificateFailure = causes.any { cause ->
-        cause is java.security.cert.CertPathValidatorException ||
-            cause.message?.contains("trust anchor", ignoreCase = true) == true ||
-            cause.message?.contains("certification path", ignoreCase = true) == true
-    }
-    if (certificateFailure) {
-        return "WSS 证书未被手机信任。请校准系统时间，并检查 VPN、代理或 HTTPS 证书拦截后重试"
+    val causes = connectionFailureCauses(error)
+    if (isTlsVerificationFailure(causes)) {
+        return "WSS 证书或主机名验证失败。请校准系统时间，并检查 VPN、代理或 HTTPS 证书拦截后重试"
     }
 
     return causes.firstNotNullOfOrNull { it.message?.takeIf(String::isNotBlank) }
         ?: responseMessage?.takeIf(String::isNotBlank)
         ?: "WebSocket 连接失败"
 }
+
+internal fun isTlsVerificationFailure(error: Throwable): Boolean =
+    isTlsVerificationFailure(connectionFailureCauses(error))
+
+private fun isTlsVerificationFailure(causes: List<Throwable>): Boolean = causes.any { cause ->
+    when (cause) {
+        is CertPathValidatorException,
+        is CertificateException,
+        is SSLPeerUnverifiedException,
+        -> true
+
+        else -> {
+            val detail = cause.message.orEmpty().lowercase()
+            detail.contains("trust anchor") ||
+                detail.contains("certification path") ||
+                detail.contains("chain validation failed") ||
+                detail.contains("unable to find valid certification path") ||
+                (
+                    detail.contains("hostname") &&
+                        listOf("not verified", "verification failed", "mismatch")
+                            .any(detail::contains)
+                    ) ||
+                (
+                    cause is SSLHandshakeException &&
+                        detail.contains("certificate") &&
+                        listOf("verify", "verification", "validation", "validity", "path", "chain")
+                            .any(detail::contains)
+                    )
+        }
+    }
+}
+
+private fun connectionFailureCauses(error: Throwable): List<Throwable> =
+    generateSequence(error) { it.cause }.take(12).toList()

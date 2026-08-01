@@ -133,6 +133,11 @@ private data class PendingUploadConfirmation(
     val actionId: String,
 )
 
+private data class ToolboxConnection(
+    val connection: QuickerConnectionBinding,
+    val actionId: String,
+)
+
 data class ScreenPreviewState(
     val path: String,
     val name: String,
@@ -455,8 +460,10 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     private var syncPanelActionsAfterConnect = false
     private var toolboxJob: Job? = null
     private var activeTransferId: String? = null
+    private var activeTransferConnection: ToolboxConnection? = null
     private var suppressRemoteTransferCancel = false
     private var pendingUploadConfirmation: PendingUploadConfirmation? = null
+    private var screenConnection: ToolboxConnection? = null
     private var toolboxCancellationRequested = false
     private val mutableUiState = MutableStateFlow(
         QuickerUiState(
@@ -480,6 +487,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     val installRequests: SharedFlow<Uri> = mutableInstallRequests.asSharedFlow()
 
     init {
+        connectionRuntime.setCompanionActionId(mutableUiState.value.catalogActionId)
         viewModelScope.launch {
             connectionManager.state.collect { connectionState ->
                 handleConnectionState(connectionState)
@@ -492,9 +500,9 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             connectionRuntime.events.collect(::handleRuntimeEvent)
         }
         viewModelScope.launch {
-            connectionRuntime.incomingFileOffer.collect { descriptor ->
+            connectionRuntime.incomingFileOffer.collect { offer ->
                 mutableUiState.update {
-                    it.copy(incomingFileOffer = descriptor?.let(::IncomingFileOfferState))
+                    it.copy(incomingFileOffer = offer?.descriptor?.let(::IncomingFileOfferState))
                 }
             }
         }
@@ -1099,7 +1107,8 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             title = "获取当前屏幕",
             detail = "正在请求电脑生成快照",
         ) {
-            requestAndDownloadScreen("获取电脑当前屏幕：Quicker Link")
+            val connection = currentToolboxConnection()
+            requestAndDownloadScreen("获取电脑当前屏幕：Quicker Link", connection)
         }
     }
 
@@ -1110,6 +1119,11 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         if (state.screenPreview?.captureId != captureId) {
+            mutableNotices.tryEmit(UiNotice.Error("屏幕画面已失效，请刷新后重试"))
+            return
+        }
+        val connection = screenConnection
+        if (connection == null) {
             mutableNotices.tryEmit(UiNotice.Error("屏幕画面已失效，请刷新后重试"))
             return
         }
@@ -1130,10 +1144,12 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 command = QuickerToolboxProtocol.screenClickCommand(captureId, x, y),
                 expectedOperation = QuickerToolboxProtocol.OP_SCREEN_CLICK,
                 logSummary = "点击电脑屏幕：Quicker Link",
+                actionId = connection.actionId,
+                expectedConnection = connection.connection,
             )
             appendLog(QuickerEventDirection.INCOMING, "电脑已接收屏幕点击")
             delay(200)
-            requestAndDownloadScreen("点击后刷新电脑屏幕：Quicker Link")
+            requestAndDownloadScreen("点击后刷新电脑屏幕：Quicker Link", connection)
         }
     }
 
@@ -1144,13 +1160,21 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             detail = "请在电脑上选择一个不超过 64 MiB 的文件",
             canCancel = true,
         ) {
+            val connection = currentToolboxConnection()
             val result = requestToolbox(
                 command = QuickerToolboxProtocol.downloadPickCommand(),
                 expectedOperation = QuickerToolboxProtocol.OP_DOWNLOAD_PICK,
                 logSummary = "从电脑选择文件：Quicker Link",
                 timeoutMs = FILE_PICK_TIMEOUT_MS,
+                actionId = connection.actionId,
+                expectedConnection = connection.connection,
             ) as QuickerToolboxResult.Transfer
-            downloadFromComputer(result.descriptor, ToolboxTask.RECEIVE_FILE, keepAsScreenPreview = false)
+            downloadFromComputer(
+                descriptor = result.descriptor,
+                task = ToolboxTask.RECEIVE_FILE,
+                keepAsScreenPreview = false,
+                connection = connection,
+            )
         }
     }
 
@@ -1164,10 +1188,12 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             mutableNotices.tryEmit(UiNotice.Error("请等待当前传输完成"))
             return
         }
-        val descriptor = connectionRuntime.clearIncomingFileOffer(offer.descriptor.id) ?: run {
+        val incoming = connectionRuntime.clearIncomingFileOffer(offer.descriptor.id) ?: run {
             mutableNotices.tryEmit(UiNotice.Error("文件邀请已失效"))
             return
         }
+        val descriptor = incoming.descriptor
+        val connection = ToolboxConnection(incoming.connection, incoming.actionId)
         mutableUiState.update { it.copy(incomingFileOffer = null) }
         launchToolboxTask(
             task = ToolboxTask.RECEIVE_FILE,
@@ -1179,13 +1205,15 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 descriptor = descriptor,
                 task = ToolboxTask.RECEIVE_FILE,
                 keepAsScreenPreview = false,
+                connection = connection,
             )
         }
     }
 
     fun rejectIncomingFileOffer() {
         val offer = mutableUiState.value.incomingFileOffer ?: return
-        val descriptor = connectionRuntime.clearIncomingFileOffer(offer.descriptor.id) ?: return
+        val incoming = connectionRuntime.clearIncomingFileOffer(offer.descriptor.id) ?: return
+        val descriptor = incoming.descriptor
         mutableUiState.update { it.copy(incomingFileOffer = null) }
         viewModelScope.launch {
             runCatching {
@@ -1193,6 +1221,8 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     command = QuickerToolboxProtocol.cancelCommand(descriptor.id),
                     expectedOperation = QuickerToolboxProtocol.OP_TRANSFER_CANCEL,
                     logSummary = "拒绝电脑文件：Quicker Link",
+                    actionId = incoming.actionId,
+                    expectedConnection = incoming.connection,
                 )
             }
         }
@@ -1279,10 +1309,12 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             detail = "正在重新确认 ${pending.fileName}",
         ) {
             activeTransferId = pending.transferId
+            activeTransferConnection = ToolboxConnection(pending.connection, pending.actionId)
             suppressRemoteTransferCancel = true
             val saved = finishUploadWithRecovery(pending)
             pendingUploadConfirmation = null
             activeTransferId = null
+            activeTransferConnection = null
             suppressRemoteTransferCancel = false
             publishUploadSuccess(saved)
         }
@@ -1540,6 +1572,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 handleToolboxFailure(task, title, error)
             } finally {
                 activeTransferId = null
+                activeTransferConnection = null
                 suppressRemoteTransferCancel = false
                 toolboxCancellationRequested = false
                 toolboxJob = null
@@ -1637,11 +1670,21 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         return QuickerToolboxProtocol.parse(response.data, expectedOperation)
     }
 
+    private fun currentToolboxConnection(): ToolboxConnection {
+        val connection = connectionManager.currentReadyConnectionBinding()
+            ?: throw IllegalStateException("尚未连接到 Quicker")
+        return ToolboxConnection(
+            connection = connection,
+            actionId = mutableUiState.value.catalogActionId,
+        )
+    }
+
     private suspend fun uploadToComputer(upload: PreparedUpload) {
         pendingUploadConfirmation = null
         val connection = connectionManager.currentReadyConnectionBinding()
             ?: throw IllegalStateException("尚未连接到 Quicker")
         val actionId = mutableUiState.value.catalogActionId
+        val toolboxConnection = ToolboxConnection(connection, actionId)
         updateTransferProgress(
             ToolboxTask.SEND_FILE,
             "发送文件到电脑",
@@ -1665,6 +1708,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             "电脑返回了无效的上传起点"
         }
         activeTransferId = started.transferId
+        activeTransferConnection = toolboxConnection
 
         var offset = 0L
         FileInputStream(upload.file).use { input ->
@@ -1717,6 +1761,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         val saved = finishUploadWithRecovery(pending)
         pendingUploadConfirmation = null
         activeTransferId = null
+        activeTransferConnection = null
         suppressRemoteTransferCancel = false
         publishUploadSuccess(saved)
     }
@@ -1779,6 +1824,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         descriptor: QuickerTransferDescriptor,
         task: ToolboxTask,
         keepAsScreenPreview: Boolean,
+        connection: ToolboxConnection,
         captureId: String? = null,
     ) {
         if (keepAsScreenPreview) {
@@ -1786,6 +1832,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             require(captureId != null) { "电脑未返回屏幕标识" }
         }
         activeTransferId = descriptor.id
+        activeTransferConnection = connection
         val part = withContext(Dispatchers.IO) { transferStore.createIncomingPart() }
         var committed = false
         try {
@@ -1798,6 +1845,8 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                         command = QuickerToolboxProtocol.downloadChunkCommand(descriptor.id, offset),
                         expectedOperation = QuickerToolboxProtocol.OP_DOWNLOAD_CHUNK,
                         logRequest = false,
+                        actionId = connection.actionId,
+                        expectedConnection = connection.connection,
                     ) as QuickerToolboxResult.DownloadChunk
                     val expectedCount = minOf(
                         QuickerToolboxProtocol.CHUNK_BYTES.toLong(),
@@ -1848,17 +1897,19 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     transferStore.finalizeScreen(part, descriptor.name, descriptor.mime)
                 }
                 committed = true
-                finishRemoteDownloadBestEffort(descriptor.id)
+                finishRemoteDownloadBestEffort(descriptor.id, connection)
                 activeTransferId = null
-                publishScreenPreview(preview, requireNotNull(captureId))
+                activeTransferConnection = null
+                publishScreenPreview(preview, requireNotNull(captureId), connection)
             } else {
                 val saved = withContext(Dispatchers.IO) {
                     transferStore.saveToDownloads(part, descriptor.name, descriptor.mime)
                 }
                 committed = true
                 withContext(Dispatchers.IO) { transferStore.delete(part) }
-                finishRemoteDownloadBestEffort(descriptor.id)
+                finishRemoteDownloadBestEffort(descriptor.id, connection)
                 activeTransferId = null
+                activeTransferConnection = null
                 mutableUiState.update {
                     it.copy(
                         toolboxStatus = ToolboxStatus.Success(
@@ -1878,22 +1929,32 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private suspend fun requestAndDownloadScreen(logSummary: String) {
+    private suspend fun requestAndDownloadScreen(
+        logSummary: String,
+        connection: ToolboxConnection,
+    ) {
         val result = requestToolbox(
             command = QuickerToolboxProtocol.screenCaptureCommand(),
             expectedOperation = QuickerToolboxProtocol.OP_SCREEN_CAPTURE,
             logSummary = logSummary,
             timeoutMs = SCREEN_CAPTURE_TIMEOUT_MS,
+            actionId = connection.actionId,
+            expectedConnection = connection.connection,
         ) as QuickerToolboxResult.ScreenCapture
         downloadFromComputer(
             descriptor = result.descriptor,
             task = ToolboxTask.SCREEN,
             keepAsScreenPreview = true,
+            connection = connection,
             captureId = result.captureId,
         )
     }
 
-    private suspend fun publishScreenPreview(preview: ScreenPreview, captureId: String) {
+    private suspend fun publishScreenPreview(
+        preview: ScreenPreview,
+        captureId: String,
+        connection: ToolboxConnection,
+    ) {
         val previousPath = mutableUiState.value.screenPreview?.path
         val capturedAt = LocalTime.now().format(timeFormatter)
         mutableUiState.update {
@@ -1911,6 +1972,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 ),
             )
         }
+        screenConnection = connection
         if (previousPath != null && previousPath != preview.file.absolutePath) {
             withContext(Dispatchers.IO) { transferStore.delete(File(previousPath)) }
         }
@@ -1937,7 +1999,10 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private suspend fun finishRemoteDownloadBestEffort(transferId: String) {
+    private suspend fun finishRemoteDownloadBestEffort(
+        transferId: String,
+        connection: ToolboxConnection,
+    ) {
         val cleaned = withContext(NonCancellable) {
             runCatching {
                 requestToolbox(
@@ -1945,6 +2010,8 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     expectedOperation = QuickerToolboxProtocol.OP_DOWNLOAD_FINISH,
                     logRequest = false,
                     timeoutMs = REMOTE_CLEANUP_TIMEOUT_MS,
+                    actionId = connection.actionId,
+                    expectedConnection = connection.connection,
                 )
             }.isSuccess
         }
@@ -1956,6 +2023,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun cancelActiveRemoteTransferBestEffort() {
         if (suppressRemoteTransferCancel) return
         val transferId = activeTransferId ?: return
+        val connection = activeTransferConnection ?: return
         withContext(NonCancellable) {
             runCatching {
                 requestToolbox(
@@ -1963,10 +2031,13 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     expectedOperation = QuickerToolboxProtocol.OP_TRANSFER_CANCEL,
                     logRequest = false,
                     timeoutMs = REMOTE_CLEANUP_TIMEOUT_MS,
+                    actionId = connection.actionId,
+                    expectedConnection = connection.connection,
                 )
             }
         }
         activeTransferId = null
+        activeTransferConnection = null
     }
 
     private suspend fun handleConnectionState(connectionState: QuickerConnectionState) {
@@ -1992,6 +2063,9 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     else -> state.connectionError
                 },
             )
+        }
+        if (connectionState !is QuickerConnectionState.Ready) {
+            screenConnection = null
         }
 
         when (connectionState) {
@@ -2042,13 +2116,14 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
         val requestedTarget = config.toLinkTarget(serviceActionId)
         activeLinkTarget = requestedTarget
+        connectionRuntime.setCompanionActionId(serviceActionId)
+        connectionRuntime.clearIncomingFileOffer()
         val keepCapabilities = shouldKeepLinkCapabilities(
             verifiedTarget = verifiedCapabilitiesTarget,
             requestedTarget = requestedTarget,
         )
         if (!keepCapabilities) {
             stopClipboardSync(resetGuard = true)
-            connectionRuntime.clearIncomingFileOffer()
         }
         mutableUiState.update {
             it.copy(
@@ -2056,6 +2131,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 screenPreview = it.screenPreview?.copy(captureId = null),
             )
         }
+        screenConnection = null
         val connectionToPersist = StoredConnection(
             ipAddress = config.ipAddress,
             port = config.port,
@@ -2094,6 +2170,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         }
         if (clipboardListener == null) {
             val listener = ClipboardManager.OnPrimaryClipChangedListener {
+                clipboardSyncGuard.markPhoneClipboardChanged()
                 schedulePhoneClipboardSync()
             }
             clipboardListener = listener
@@ -2162,6 +2239,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
 
     private suspend fun syncComputerClipboardOnce() {
         val connection = connectionManager.currentReadyConnectionBinding() ?: return
+        val readToken = clipboardSyncGuard.beginComputerRead()
         try {
             val result = requestToolbox(
                 command = QuickerToolboxProtocol.clipboardReadCommand(),
@@ -2171,7 +2249,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 expectedConnection = connection,
             ) as QuickerToolboxResult.Clipboard
             val text = result.text.takeIf(::isClipboardSyncText) ?: return
-            val fingerprint = clipboardSyncGuard.computerCandidate(text) ?: return
+            val fingerprint = clipboardSyncGuard.computerCandidate(text, readToken) ?: return
             if (!writePhoneClipboard("Quicker Link 同步", text)) {
                 clipboardSyncGuard.markComputerApplyFailed(fingerprint)
                 setClipboardSyncError(null, "手机剪贴板暂不可用")

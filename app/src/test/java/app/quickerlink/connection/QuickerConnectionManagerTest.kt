@@ -32,9 +32,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 import java.security.cert.CertPathValidatorException
+import java.security.cert.CertificateException
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class QuickerConnectionManagerTest {
@@ -84,7 +87,7 @@ class QuickerConnectionManagerTest {
         socket.receive("""{"messageType":6,"replyTo":1,"isSuccess":false,"message":"late"}""")
         assertTrue(manager.state.value is QuickerConnectionState.Ready)
 
-        val expectedSerials = (100L until 200L).toList()
+        val expectedSerials = (0 until INCOMING_COMMAND_CAPACITY).map { 100L + it }
         expectedSerials.forEach { socket.receive(command(serial = it)) }
 
         // Collection begins after the burst. Channel-backed commands must still all be present.
@@ -93,6 +96,52 @@ class QuickerConnectionManagerTest {
         }
         assertEquals(expectedSerials, received.map { it.message.serial })
         assertFalse(received.any { it.message.serial == 10L })
+        manager.close()
+    }
+
+    @Test
+    fun `protocol serial stays in positive int range and wraps safely`() {
+        val serial = PositiveIntSerialGenerator(Int.MAX_VALUE.toLong() - 1L)
+
+        assertEquals(Int.MAX_VALUE.toLong() - 1L, serial.next())
+        assertEquals(Int.MAX_VALUE.toLong(), serial.next())
+        assertEquals(1L, serial.next())
+        assertEquals(2L, serial.next())
+    }
+
+    @Test
+    fun `full incoming command queue rejects with busy without auth warning`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+        manager.connect(CONFIG)
+        val socket = factory.latestSocket()
+        socket.open()
+        socket.receive("""{"messageType":6,"replyTo":1,"isSuccess":true}""")
+
+        val systemEvents = mutableListOf<String>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            manager.events
+                .filter { it.direction == QuickerEventDirection.SYSTEM }
+                .collect { systemEvents += it.summary }
+        }
+        repeat(INCOMING_COMMAND_CAPACITY) { index ->
+            socket.receive(command(serial = 100L + index))
+        }
+        val rejectedSerial = 10_000L
+        socket.receive(command(serial = rejectedSerial))
+        runCurrent()
+
+        val busyResponse = socket.sentTexts
+            .map(QuickerProtocol::parse)
+            .last { it.messageType == QuickerProtocol.MESSAGE_RESPONSE }
+        assertEquals(rejectedSerial, busyResponse.replyTo)
+        assertEquals(false, busyResponse.isSuccess)
+        assertEquals("busy", busyResponse.message)
+        assertTrue(systemEvents.any { it.contains("命令队列已满") })
+        assertFalse(systemEvents.any { it.contains("认证完成前") })
         manager.close()
     }
 
@@ -473,6 +522,44 @@ class QuickerConnectionManagerTest {
         assertTrue(detail.contains("WSS"))
         assertTrue(detail.contains("VPN"))
         assertFalse(detail.contains("Trust anchor"))
+    }
+
+    @Test
+    fun `tls verification classification covers chain hostname and certificate handshake`() {
+        val handshake = SSLHandshakeException("certificate validation failed").apply {
+            initCause(CertificateException("chain validation failed"))
+        }
+
+        assertTrue(isTlsVerificationFailure(CertPathValidatorException("invalid path")))
+        assertTrue(isTlsVerificationFailure(SSLPeerUnverifiedException("Hostname pc not verified")))
+        assertTrue(isTlsVerificationFailure(handshake))
+        assertTrue(isTlsVerificationFailure(SSLHandshakeException("certificate verification failed")))
+        assertTrue(isTlsVerificationFailure(IOException("hostname mismatch")))
+        assertFalse(isTlsVerificationFailure(SSLHandshakeException("protocol version mismatch")))
+    }
+
+    @Test
+    fun `tls verification failure is terminal and never schedules reconnect`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+            retryDelayMillis = { 0L },
+        )
+        manager.connect(CONFIG)
+        factory.latestSocket().fail(
+            IOException(
+                "handshake failed",
+                CertPathValidatorException("Trust anchor for certification path not found"),
+            ),
+        )
+        advanceUntilIdle()
+
+        val state = manager.state.value
+        assertTrue(state is QuickerConnectionState.Error)
+        assertTrue((state as QuickerConnectionState.Error).reason.contains("WSS"))
+        assertEquals(1, factory.sockets.size)
+        manager.close()
     }
 
     @Test
