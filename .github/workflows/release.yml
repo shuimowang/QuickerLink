@@ -100,12 +100,19 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/quicker-link-release.jks"
 
-  publish-pages:
+  dispatch-pages:
     needs: release
     permissions:
-      contents: read
-      pages: write
-      id-token: write
-    uses: ./.github/workflows/pages.yml
-    with:
-      expected_release_tag: ${{ github.ref_name }}
+      actions: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Dispatch Pages deployment from main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh workflow run pages.yml
+          --repo "$GITHUB_REPOSITORY"
+          --ref main
+          --field expected_release_tag="$GITHUB_REF_NAME"

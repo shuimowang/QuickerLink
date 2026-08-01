@@ -45,7 +45,7 @@ The tag workflow then:
 - creates a GitHub prerelease containing only that APK and checksum;
 - removes the decoded keystore even when an earlier step fails.
 
-After the Release job succeeds, a separate job calls the reusable Pages workflow with the new tag as `expected_release_tag`. The caller has no top-level permissions: the Release job receives only `contents: write`, while the Pages job receives only `contents: read`, `pages: write`, and `id-token: write`.
+After the Release job succeeds, a separate job with only `actions: write` dispatches the Pages workflow from `main` and passes the new tag as `expected_release_tag`. Dispatching from `main` satisfies the protected `github-pages` environment without giving the tagged Release job deployment credentials. The caller has no top-level permissions: the Release job receives only `contents: write`, while the independently dispatched Pages workflow receives only `contents: read`, `pages: write`, and `id-token: write`.
 
 The Pages workflow then:
 
@@ -65,5 +65,5 @@ Do not upload a local debug APK or unsigned `assembleRelease` output to a GitHub
 
 - Development: run focused tests for the code being changed. Do not build an APK unless the change affects packaging, resources, manifests, or device behavior.
 - Main branch: regular CI runs the complete unit-test suite and Android Lint. New pushes cancel obsolete runs for the same branch.
-- Tagged release: the protected workflow repeats tests and Lint, builds one signed Release APK, verifies its tag, certificate, and checksum, publishes it, and then refreshes the Pages update index through the separately permissioned reusable workflow.
+- Tagged release: the protected workflow repeats tests and Lint, builds one signed Release APK, verifies its tag, certificate, and checksum, publishes it, and then dispatches the separately permissioned Pages workflow from `main` to refresh the update index.
 - Device smoke test: reserve it for changes to pairing, networking, storage, permissions, updates, or user-facing workflows. Documentation and isolated unit-tested logic changes do not require reinstalling the app.
