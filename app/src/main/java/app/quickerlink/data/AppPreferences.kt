@@ -33,6 +33,10 @@ interface QuickerPreferences {
     fun loadActions(): List<SavedAction>
 
     fun saveActions(actions: List<SavedAction>)
+
+    fun loadFeatureSettings(): FeatureSettings
+
+    fun saveFeatureSettings(settings: FeatureSettings): PreferenceWriteResult
 }
 
 class AppPreferences(context: Context) : QuickerPreferences {
@@ -117,6 +121,29 @@ class AppPreferences(context: Context) : QuickerPreferences {
         preferences.edit { putString(KEY_ACTIONS, gson.toJson(actions)) }
     }
 
+    override fun loadFeatureSettings(): FeatureSettings = FeatureSettings(
+        backgroundConnectionEnabled = preferences.getBoolean(KEY_BACKGROUND_CONNECTION, false),
+        clipboardSyncEnabled = preferences.getBoolean(KEY_CLIPBOARD_SYNC, false),
+    )
+
+    @SuppressLint("ApplySharedPref", "UseKtx")
+    override fun saveFeatureSettings(settings: FeatureSettings): PreferenceWriteResult {
+        val saved = try {
+            preferences.edit()
+                .putBoolean(KEY_BACKGROUND_CONNECTION, settings.backgroundConnectionEnabled)
+                .putBoolean(KEY_CLIPBOARD_SYNC, settings.clipboardSyncEnabled)
+                .commit()
+        } catch (error: Exception) {
+            return PreferenceWriteResult.Failure("无法保存增强功能设置", error)
+        }
+
+        return if (saved) {
+            PreferenceWriteResult.Success
+        } else {
+            PreferenceWriteResult.Failure("无法保存增强功能设置")
+        }
+    }
+
     private fun encrypt(value: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
@@ -167,6 +194,8 @@ class AppPreferences(context: Context) : QuickerPreferences {
         const val KEY_SERVICE_ACTION_ID = "service_action_id"
         const val KEY_PASSWORD = "password_v1"
         const val KEY_ACTIONS = "saved_actions_v1"
+        const val KEY_BACKGROUND_CONNECTION = "background_connection_v1"
+        const val KEY_CLIPBOARD_SYNC = "clipboard_sync_v1"
         const val KEY_ALIAS = "quicker_link_connection_password_v1"
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"

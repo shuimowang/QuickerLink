@@ -39,6 +39,26 @@ class QuickerViewModelStateTest {
     )
 
     @Test
+    fun userConnectionsAllowAnEmptyVerificationCodeButRejectUnsafeValues() {
+        assertNull(connectionPasswordValidationError(""))
+        assertNull(connectionPasswordValidationError("   "))
+        assertEquals("连接验证码格式无效", connectionPasswordValidationError("line\nbreak"))
+        assertEquals("连接验证码格式无效", connectionPasswordValidationError("x".repeat(257)))
+        assertNull(connectionPasswordValidationError("123456"))
+    }
+
+    @Test
+    fun passwordlessSavedConnectionCanAutoReconnect() {
+        val legacy = storedConnection.copy(
+            password = "",
+            requiresPassword = false,
+        )
+
+        assertEquals(config.copy(password = ""), legacy.toReconnectConfigOrNull())
+        assertEquals(config, storedConnection.toReconnectConfigOrNull())
+    }
+
+    @Test
     fun savedConnectionRequiresPermissionAndDisconnectedState() {
         val session = ConnectionSession(config)
 

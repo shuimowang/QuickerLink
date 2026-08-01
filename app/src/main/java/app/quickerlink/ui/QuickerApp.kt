@@ -1,8 +1,13 @@
 package app.quickerlink.ui
 
+import android.app.Activity
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.speech.RecognizerIntent
 import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -56,6 +61,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Password
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.PowerSettingsNew
@@ -101,6 +107,8 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
@@ -124,6 +132,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -138,6 +147,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -147,6 +157,7 @@ import app.quickerlink.QuickerDiscoveryState
 import app.quickerlink.QuickerViewModel
 import app.quickerlink.ToolboxStatus
 import app.quickerlink.UiNotice
+import app.quickerlink.formatTransferBytes
 import app.quickerlink.connection.QuickerConnectionState
 import app.quickerlink.connection.QuickerEndpoint
 import app.quickerlink.connection.QuickerEventDirection
@@ -154,6 +165,7 @@ import app.quickerlink.connection.QuickerSystemCommand
 import app.quickerlink.data.SavedAction
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -165,6 +177,11 @@ private enum class MainDestination(val label: String, val icon: ImageVector) {
     ABOUT("关于", Icons.Outlined.Info),
 }
 
+private enum class SpeechTarget {
+    TRANSFER_TEXT,
+    QUICK_INPUT,
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QuickerApp(
@@ -173,6 +190,9 @@ fun QuickerApp(
     cameraPermissionGranted: Boolean,
     cameraPermissionPermanentlyDenied: Boolean,
     onRequestCameraPermission: () -> Unit,
+    notificationPermissionGranted: Boolean,
+    notificationPermissionPermanentlyDenied: Boolean,
+    onRequestNotificationPermission: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onOpenExternalUrl: (String) -> Unit,
     onChooseFile: () -> Unit,
@@ -185,6 +205,42 @@ fun QuickerApp(
     var showActionEditor by remember { mutableStateOf(false) }
     var showPairingScanner by rememberSaveable { mutableStateOf(false) }
     var pairingScannerRequested by rememberSaveable { mutableStateOf(false) }
+    var showQuickInput by rememberSaveable { mutableStateOf(false) }
+    var quickInputText by rememberSaveable { mutableStateOf("") }
+    var quickInputAppendEnter by rememberSaveable { mutableStateOf(true) }
+    var speechTarget by remember { mutableStateOf<SpeechTarget?>(null) }
+    var speechError by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val speechLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
+        val recognized = result.data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?.trim()
+            .orEmpty()
+        if (recognized.isEmpty()) return@rememberLauncherForActivityResult
+        when (speechTarget) {
+            SpeechTarget.TRANSFER_TEXT -> viewModel.updateToolboxText(recognized)
+            SpeechTarget.QUICK_INPUT -> quickInputText = recognized
+            null -> Unit
+        }
+        speechError = null
+    }
+    val requestSpeech: (SpeechTarget) -> Unit = { target ->
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出要发送的文本")
+        }
+        if (intent.resolveActivity(context.packageManager) == null) {
+            speechError = "手机上没有可用的语音识别服务"
+        } else {
+            speechTarget = target
+            speechError = null
+            speechLauncher.launch(intent)
+        }
+    }
 
     LaunchedEffect(cameraPermissionGranted, pairingScannerRequested) {
         if (cameraPermissionGranted && pairingScannerRequested) {
@@ -195,12 +251,22 @@ fun QuickerApp(
 
     LaunchedEffect(viewModel) {
         viewModel.notices.collect { notice ->
-            snackbarHostState.showSnackbar(
-                when (notice) {
-                    is UiNotice.Error -> notice.message
-                    is UiNotice.Success -> notice.message
-                },
-            )
+            when (notice) {
+                is UiNotice.Error -> snackbarHostState.showSnackbar(notice.message)
+                is UiNotice.Success -> snackbarHostState.showSnackbar(notice.message)
+                is UiNotice.ActionSent -> {
+                    val result = snackbarHostState.showSnackbar(
+                        message = notice.message,
+                        actionLabel = QUICK_INPUT_SNACKBAR_ACTION,
+                    )
+                    if (result == SnackbarResult.ActionPerformed) {
+                        quickInputText = ""
+                        quickInputAppendEnter = true
+                        speechError = null
+                        showQuickInput = true
+                    }
+                }
+            }
         }
     }
 
@@ -238,7 +304,26 @@ fun QuickerApp(
                 }
             }
         },
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = {
+            SnackbarHost(snackbarHostState) { data ->
+                if (data.visuals.actionLabel == QUICK_INPUT_SNACKBAR_ACTION) {
+                    Snackbar(
+                        action = {
+                            IconButton(onClick = data::performAction) {
+                                Icon(
+                                    Icons.AutoMirrored.Outlined.Send,
+                                    contentDescription = "继续发送文本",
+                                )
+                            }
+                        },
+                    ) {
+                        Text(data.visuals.message)
+                    }
+                } else {
+                    Snackbar { Text(data.visuals.message) }
+                }
+            }
+        },
     ) { innerPadding ->
         when (destination) {
             MainDestination.ACTIONS -> actionsStateHolder.SaveableStateProvider(ACTIONS_SCREEN_STATE_KEY) {
@@ -265,6 +350,8 @@ fun QuickerApp(
                     onTextChanged = viewModel::updateToolboxText,
                     onReadClipboard = viewModel::readComputerClipboard,
                     onSendText = viewModel::sendToolboxText,
+                    onPasteText = viewModel::pasteText,
+                    onVoiceInput = { requestSpeech(SpeechTarget.TRANSFER_TEXT) },
                     onCaptureScreen = viewModel::captureComputerScreen,
                     onScreenClick = viewModel::clickComputerScreen,
                     onSaveScreen = viewModel::saveScreenToDownloads,
@@ -298,8 +385,19 @@ fun QuickerApp(
                 },
                 onDisconnect = viewModel::disconnect,
                 onRequestPermission = onRequestLocalNetworkPermission,
+                onBackgroundConnectionChanged = { enabled ->
+                    when {
+                        !enabled -> viewModel.setBackgroundConnectionEnabled(false)
+                        notificationPermissionGranted -> viewModel.setBackgroundConnectionEnabled(true)
+                        notificationPermissionPermanentlyDenied -> {
+                            viewModel.reportBackgroundConnectionPermissionDenied()
+                            onOpenAppSettings()
+                        }
+                        else -> onRequestNotificationPermission()
+                    }
+                },
+                onClipboardSyncChanged = viewModel::setClipboardSyncEnabled,
                 onOpenAppSettings = onOpenAppSettings,
-                onPasteText = viewModel::pasteText,
                 onClearLogs = viewModel::clearLogs,
             )
 
@@ -321,6 +419,53 @@ fun QuickerApp(
             onSave = { action ->
                 viewModel.saveAction(action)
                 showActionEditor = false
+            },
+        )
+    }
+
+    if (showQuickInput) {
+        QuickInputDialog(
+            text = quickInputText,
+            appendEnter = quickInputAppendEnter,
+            speechError = speechError,
+            onTextChanged = { quickInputText = it.take(16_000) },
+            onAppendEnterChanged = { quickInputAppendEnter = it },
+            onVoiceInput = { requestSpeech(SpeechTarget.QUICK_INPUT) },
+            onDismiss = { showQuickInput = false },
+            onSend = {
+                viewModel.sendQuickInput(quickInputText, quickInputAppendEnter)
+                showQuickInput = false
+            },
+        )
+    }
+
+    state.incomingFileOffer?.let { offer ->
+        AlertDialog(
+            onDismissRequest = viewModel::rejectIncomingFileOffer,
+            icon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+            title = { Text("电脑发来文件") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(offer.descriptor.name, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        formatTransferBytes(offer.descriptor.size),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::acceptIncomingFileOffer,
+                    enabled = state.toolboxStatus !is ToolboxStatus.Working,
+                ) {
+                    Icon(Icons.Outlined.Download, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("接收")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::rejectIncomingFileOffer) { Text("拒绝") }
             },
         )
     }
@@ -360,6 +505,70 @@ fun QuickerApp(
             },
         )
     }
+}
+
+@Composable
+private fun QuickInputDialog(
+    text: String,
+    appendEnter: Boolean,
+    speechError: String?,
+    onTextChanged: (String) -> Unit,
+    onAppendEnterChanged: (Boolean) -> Unit,
+    onVoiceInput: () -> Unit,
+    onDismiss: () -> Unit,
+    onSend: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null) },
+        title = { Text("继续输入") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = onTextChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("发送到电脑当前窗口") },
+                    minLines = 3,
+                    maxLines = 7,
+                    trailingIcon = {
+                        IconButton(onClick = onVoiceInput) {
+                            Icon(Icons.Outlined.Mic, contentDescription = "语音输入")
+                        }
+                    },
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .toggleable(
+                            value = appendEnter,
+                            role = Role.Switch,
+                            onValueChange = onAppendEnterChanged,
+                        )
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("发送后按回车", modifier = Modifier.weight(1f))
+                    Switch(checked = appendEnter, onCheckedChange = null)
+                }
+                speechError?.let { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onSend, enabled = text.isNotEmpty()) {
+                Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("发送")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -483,10 +692,7 @@ private fun ActionsScreen(
             item(span = { GridItemSpan(maxLineSpan) }) {
                 ConnectionSummary(
                     state = state.connectionState,
-                    syncingPanelActions = state.syncingPanelActions,
-                    actionCount = state.savedActions.count { it.quickerActionId != null },
                     onOpenConnection = onOpenConnection,
-                    onSyncPanelActions = onSyncPanelActions,
                 )
             }
 
@@ -506,6 +712,9 @@ private fun ActionsScreen(
                         visibleCount = visibleActions.size,
                         query = searchQuery,
                         onQueryChange = { searchQuery = it },
+                        connected = state.connectionState is QuickerConnectionState.Ready,
+                        syncing = state.syncingPanelActions,
+                        onSync = onSyncPanelActions,
                     )
                 }
 
@@ -602,10 +811,7 @@ private fun ActionsScreen(
 @Composable
 private fun ConnectionSummary(
     state: QuickerConnectionState,
-    syncingPanelActions: Boolean,
-    actionCount: Int,
     onOpenConnection: () -> Unit,
-    onSyncPanelActions: () -> Unit,
 ) {
     val (title, detail, color) = when (state) {
         is QuickerConnectionState.Ready -> Triple("已连接", state.endpoint, MaterialTheme.colorScheme.primary)
@@ -653,21 +859,6 @@ private fun ConnectionSummary(
                 Icon(Icons.Outlined.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("设置")
-            }
-        }
-        if (actionCount > 0 && state is QuickerConnectionState.Ready) {
-            TextButton(
-                onClick = onSyncPanelActions,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !syncingPanelActions,
-            ) {
-                if (syncingPanelActions) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Outlined.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
-                }
-                Spacer(Modifier.width(8.dp))
-                Text("刷新面板动作 ($actionCount)")
             }
         }
     }
@@ -728,6 +919,9 @@ private fun ActionLibraryHeader(
     visibleCount: Int,
     query: String,
     onQueryChange: (String) -> Unit,
+    connected: Boolean,
+    syncing: Boolean,
+    onSync: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -737,6 +931,13 @@ private fun ActionLibraryHeader(
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            IconButton(onClick = onSync, enabled = connected && !syncing) {
+                if (syncing) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Outlined.Sync, contentDescription = "刷新面板动作")
+                }
+            }
         }
         OutlinedTextField(
             value = query,
@@ -824,6 +1025,11 @@ private fun SavedActionTile(
     val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
     val labelHeight = (34f * fontScale).dp
     val tileHeight = (134f + 34f * (fontScale - 1f)).dp
+    val labelStyle = MaterialTheme.typography.labelMedium
+    val compactSingleToken = action.label.length >= 8 &&
+        action.label.none(Char::isWhitespace) &&
+        action.label.all { it.isLetterOrDigit() || it in "._-" }
+    var labelFontSize by remember(action.label, fontScale) { mutableStateOf(labelStyle.fontSize) }
     val details = buildList {
         add(if (action.quickerActionId != null) "${action.syncedSceneLabel()}动作" else action.actionTarget)
         if (action.parameter.isNotEmpty()) add("有参数")
@@ -868,11 +1074,17 @@ private fun SavedActionTile(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(labelHeight),
-                style = MaterialTheme.typography.labelMedium,
+                style = labelStyle.copy(fontSize = labelFontSize),
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center,
-                maxLines = 2,
+                maxLines = if (compactSingleToken) 1 else 2,
+                softWrap = !compactSingleToken,
                 overflow = TextOverflow.Ellipsis,
+                onTextLayout = { result ->
+                    if (compactSingleToken && result.hasVisualOverflow && labelFontSize.value > 9f) {
+                        labelFontSize = (labelFontSize.value - 0.5f).coerceAtLeast(9f).sp
+                    }
+                },
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -900,15 +1112,6 @@ private fun SavedActionTile(
                                     onEdit()
                                 },
                             )
-                            DropdownMenuItem(
-                                text = { Text("终止动作") },
-                                leadingIcon = { Icon(Icons.Outlined.StopCircle, contentDescription = null) },
-                                enabled = enabled && !running,
-                                onClick = {
-                                    menuExpanded = false
-                                    onStop()
-                                },
-                            )
                         } else {
                             DropdownMenuItem(
                                 text = { Text("编辑") },
@@ -927,6 +1130,15 @@ private fun SavedActionTile(
                                 },
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text("终止动作") },
+                            leadingIcon = { Icon(Icons.Outlined.StopCircle, contentDescription = null) },
+                            enabled = enabled && !running,
+                            onClick = {
+                                menuExpanded = false
+                                onStop()
+                            },
+                        )
                     }
                 }
             }
@@ -1023,6 +1235,8 @@ private fun decodeActionIcon(encoded: String): Bitmap? {
 
 private const val PNG_ICON_PREFIX = "data:image/png;base64,"
 private const val QUICKER_ICON_URL_PREFIX = "https://files.getquicker.net/"
+private const val QUICK_INPUT_SNACKBAR_ACTION = "quick-input"
+private const val SCREEN_CLICK_REFRESH_INTERVAL_MS = 1_200L
 private const val ACTION_NAVIGATION_GRID_INDEX = 2
 private const val ACTIONS_SCREEN_STATE_KEY = "actions-screen"
 private const val TRANSFER_SCREEN_STATE_KEY = "transfer-screen"
@@ -1035,6 +1249,8 @@ private fun TransferScreen(
     onTextChanged: (String) -> Unit,
     onReadClipboard: () -> Unit,
     onSendText: () -> Unit,
+    onPasteText: (String) -> Unit,
+    onVoiceInput: () -> Unit,
     onCaptureScreen: () -> Unit,
     onScreenClick: (String, Int, Int) -> Unit,
     onSaveScreen: () -> Unit,
@@ -1179,11 +1395,17 @@ private fun TransferScreen(
 
         item {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    "文本",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "文本",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    IconButton(onClick = onVoiceInput, enabled = !controlsLocked) {
+                        Icon(Icons.Outlined.Mic, contentDescription = "语音输入")
+                    }
+                }
                 OutlinedTextField(
                     value = state.toolboxText,
                     onValueChange = onTextChanged,
@@ -1225,8 +1447,17 @@ private fun TransferScreen(
                     ) {
                         Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null)
                         Spacer(Modifier.width(6.dp))
-                        Text("发送到电脑")
+                        Text("复制到电脑")
                     }
+                }
+                OutlinedButton(
+                    onClick = { onPasteText(state.toolboxText) },
+                    enabled = connected && !controlsLocked && state.toolboxText.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Outlined.ContentPaste, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("粘贴到电脑当前窗口")
                 }
             }
             HorizontalDivider(modifier = Modifier.padding(top = 18.dp))
@@ -1335,12 +1566,23 @@ private fun TransferScreen(
                     }
                 }
             }
-            LaunchedEffect(preview.captureId) {
-                screenClickMode = false
-            }
             val captureId = preview.captureId
             val clickAvailable = state.linkCapabilities?.screenClick == true &&
                 captureId != null && connected && !controlsLocked && imageDimensions != null
+            val automaticRefreshEnabled = showScreenPreview &&
+                screenClickMode &&
+                connected &&
+                !controlsLocked &&
+                state.toolboxStatus !is ToolboxStatus.Failed
+            LaunchedEffect(
+                automaticRefreshEnabled,
+                preview.captureId,
+            ) {
+                if (automaticRefreshEnabled) {
+                    delay(SCREEN_CLICK_REFRESH_INTERVAL_MS)
+                    onCaptureScreen()
+                }
+            }
             val screenTapModifier = if (screenClickMode && clickAvailable) {
                 Modifier.pointerInput(preview.path, captureId, imageDimensions) {
                     detectTapGestures { offset ->
@@ -1353,7 +1595,6 @@ private fun TransferScreen(
                             tapX = offset.x,
                             tapY = offset.y,
                         ) ?: return@detectTapGestures
-                        screenClickMode = false
                         onScreenClick(requireNotNull(captureId), point.x, point.y)
                     }
                 }
@@ -1419,17 +1660,28 @@ private fun TransferScreen(
                             )
                         }
                     }
-                    IconButton(
-                        onClick = {
-                            screenClickMode = false
-                            showScreenPreview = false
-                        },
+                    Row(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .padding(18.dp)
-                            .background(Color.Black.copy(alpha = 0.58f), CircleShape),
+                            .padding(18.dp),
                     ) {
-                        Icon(Icons.Outlined.Close, contentDescription = "关闭预览", tint = Color.White)
+                        IconButton(
+                            onClick = onCaptureScreen,
+                            enabled = connected && !controlsLocked,
+                            modifier = Modifier.background(Color.Black.copy(alpha = 0.58f), CircleShape),
+                        ) {
+                            Icon(Icons.Outlined.Sync, contentDescription = "刷新屏幕", tint = Color.White)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        IconButton(
+                            onClick = {
+                                screenClickMode = false
+                                showScreenPreview = false
+                            },
+                            modifier = Modifier.background(Color.Black.copy(alpha = 0.58f), CircleShape),
+                        ) {
+                            Icon(Icons.Outlined.Close, contentDescription = "关闭预览", tint = Color.White)
+                        }
                     }
                 }
             }
@@ -1602,12 +1854,12 @@ private fun ConnectionScreen(
     onScanPairingCode: () -> Unit,
     onDisconnect: () -> Unit,
     onRequestPermission: () -> Unit,
+    onBackgroundConnectionChanged: (Boolean) -> Unit,
+    onClipboardSyncChanged: (Boolean) -> Unit,
     onOpenAppSettings: () -> Unit,
-    onPasteText: (String) -> Unit,
     onClearLogs: () -> Unit,
 ) {
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
-    var textToSend by rememberSaveable { mutableStateOf("") }
     var advancedExpanded by rememberSaveable { mutableStateOf(false) }
     var logsExpanded by rememberSaveable { mutableStateOf(false) }
     val connected = state.connectionState is QuickerConnectionState.Ready
@@ -1637,6 +1889,27 @@ private fun ConnectionScreen(
             )
         }
 
+        if ((connected || busy) && state.password.isEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Icon(
+                        Icons.Outlined.ErrorOutline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.tertiary,
+                    )
+                    Text(
+                        "当前未使用连接验证码。仅建议在可信局域网使用，并优先在 Quicker 中设置验证码。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
         if (!state.localNetworkPermissionGranted) {
             item {
                 PermissionRow(
@@ -1645,6 +1918,33 @@ private fun ConnectionScreen(
                     onOpenAppSettings = onOpenAppSettings,
                 )
             }
+        }
+
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "增强功能",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                BackgroundConnectionRow(
+                    checked = state.backgroundConnectionEnabled,
+                    onCheckedChange = onBackgroundConnectionChanged,
+                )
+                HorizontalDivider()
+                ClipboardSyncRow(
+                    checked = state.clipboardSyncEnabled,
+                    onCheckedChange = onClipboardSyncChanged,
+                )
+            }
+        }
+
+        state.backgroundConnectionError?.let { error ->
+            item { ConnectionErrorRow(error) }
+        }
+
+        state.clipboardSyncError?.let { error ->
+            item { ConnectionErrorRow(error) }
         }
 
         state.connectionError
@@ -1688,7 +1988,17 @@ private fun ConnectionScreen(
                     value = state.password,
                     onValueChange = onPasswordChanged,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("连接验证码") },
+                    label = { Text("连接验证码（推荐）") },
+                    supportingText = if (state.password.isEmpty()) {
+                        {
+                            Text(
+                                "可以留空，但同一局域网内的设备将无需验证码即可连接",
+                                color = MaterialTheme.colorScheme.tertiary,
+                            )
+                        }
+                    } else {
+                        null
+                    },
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Outlined.Password, contentDescription = null) },
                     trailingIcon = {
@@ -1796,36 +2106,6 @@ private fun ConnectionScreen(
         item {
             Spacer(Modifier.height(8.dp))
             HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
-            SectionTitle("快速粘贴")
-        }
-
-        item {
-            OutlinedTextField(
-                value = textToSend,
-                onValueChange = { textToSend = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("文本内容") },
-                minLines = 3,
-                maxLines = 6,
-            )
-        }
-
-        item {
-            Button(
-                onClick = { onPasteText(textToSend) },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = connected && textToSend.isNotEmpty(),
-            ) {
-                Icon(Icons.Outlined.ContentPaste, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("粘贴到当前窗口")
-            }
-        }
-
-        item {
-            Spacer(Modifier.height(8.dp))
-            HorizontalDivider()
             Spacer(Modifier.height(8.dp))
             TextButton(
                 onClick = { logsExpanded = !logsExpanded },
@@ -1870,6 +2150,86 @@ private fun ConnectionScreen(
                 items(state.logs.take(30)) { log -> EventLogRow(log) }
             }
         }
+    }
+}
+
+@Composable
+private fun BackgroundConnectionRow(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            )
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = "后台增强连接",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = if (checked) {
+                    "锁屏或切换应用后仍保持局域网连接"
+                } else {
+                    "默认关闭；开启后会显示常驻通知"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = null)
+    }
+}
+
+@Composable
+private fun ClipboardSyncRow(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            )
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = "前台剪贴板同步",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = if (checked) {
+                    "App 在前台时双向同步短文本"
+                } else {
+                    "默认关闭；敏感剪贴板不会自动同步"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 

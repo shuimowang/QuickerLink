@@ -28,3 +28,8 @@ data class StoredConnection(
     val requiresPassword: Boolean = false,
     val serviceActionId: String? = null,
 )
+
+data class FeatureSettings(
+    val backgroundConnectionEnabled: Boolean = false,
+    val clipboardSyncEnabled: Boolean = false,
+)

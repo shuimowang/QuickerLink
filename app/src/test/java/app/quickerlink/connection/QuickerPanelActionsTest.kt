@@ -12,8 +12,8 @@ import java.util.Base64
 
 class QuickerPanelActionsTest {
     @Test
-    fun usesStrictV7PanelActionCommand() {
-        assertEquals("quickerlink:list-panel-actions:v7", QuickerPanelActionsProtocol.LIST_COMMAND)
+    fun usesStrictV8PanelActionCommand() {
+        assertEquals("quickerlink:list-panel-actions:v8", QuickerPanelActionsProtocol.LIST_COMMAND)
         assertEquals(
             "b02b2732-f087-4e45-416d-08deee3e76ba",
             QuickerPanelActionsProtocol.COMPANION_SHARED_ACTION_ID,
@@ -42,12 +42,18 @@ class QuickerPanelActionsTest {
         assertEquals(emptyList<ActionParameterChoice>(), catalog.scenes.first().actions.single().parameterChoices)
         assertEquals(64L * 1024 * 1024, catalog.capabilities.maxFileBytes)
         assertTrue(catalog.capabilities.screenClick)
+        assertTrue(catalog.capabilities.clipboardWrite)
         assertTrue(catalog.capabilities.systemControl)
         assertEquals(64 * 1024, catalog.capabilities.chunkBytes)
+        assertTrue(catalog.capabilities.desktopPush.text)
+        assertTrue(catalog.capabilities.desktopPush.notification)
+        assertTrue(catalog.capabilities.desktopPush.file)
+        assertEquals(16_000, catalog.capabilities.desktopPush.maxTextChars)
+        assertEquals(64L * 1024 * 1024, catalog.capabilities.desktopPush.maxFileBytes)
     }
 
     @Test
-    fun parsesV7CatalogReturnedAsObject() {
+    fun parsesV8CatalogReturnedAsObject() {
         val data = JsonParser.parseString(successCatalog()).asJsonObject
 
         val catalog = QuickerPanelActionsProtocol.parse(data)
@@ -168,7 +174,7 @@ class QuickerPanelActionsTest {
             QuickerPanelActionsProtocol.parse(JsonPrimitive(legacy))
         }
         assertThrows(UnsupportedPanelCatalogVersionException::class.java) {
-            QuickerPanelActionsProtocol.parse(JsonPrimitive(successCatalog().replace("\"version\":7", "\"version\":5")))
+            QuickerPanelActionsProtocol.parse(JsonPrimitive(successCatalog().replace("\"version\":8", "\"version\":5")))
         }
     }
 
@@ -284,6 +290,8 @@ class QuickerPanelActionsTest {
             valid.replace("\"screenClick\":true", "\"screenClick\":false"),
             valid.replace("\"screenClick\":true,", ""),
             valid.replace("\"clipboardRead\":true", "\"clipboardRead\":false"),
+            valid.replace("\"clipboardWrite\":true", "\"clipboardWrite\":false"),
+            valid.replace("\"clipboardWrite\":true,", ""),
             valid.replace("\"systemControl\":true", "\"systemControl\":false"),
             valid.replace("\"systemControl\":true,", ""),
             valid.replace("\"stopAction\":true", "\"stopAction\":true,\"extra\":true"),
@@ -292,6 +300,13 @@ class QuickerPanelActionsTest {
             valid.replace("\"maxBytes\":67108864", "\"maxBytes\":67108863"),
             valid.replace("\"chunkBytes\":65536", "\"chunkBytes\":32768"),
             valid.replace("\"chunkBytes\":65536", "\"chunkBytes\":65536,\"extra\":true"),
+            valid.replace("\"desktopPush\":$DESKTOP_PUSH_JSON", "\"desktopPush\":null"),
+            valid.replace("\"text\":true", "\"text\":false"),
+            valid.replace("\"notification\":true", "\"notification\":false"),
+            valid.replace("\"file\":true", "\"file\":false"),
+            valid.replace("\"maxTextChars\":16000", "\"maxTextChars\":15999"),
+            valid.replace("\"maxFileBytes\":67108864", "\"maxFileBytes\":67108863"),
+            valid.replace("\"maxFileBytes\":67108864", "\"maxFileBytes\":67108864,\"extra\":true"),
         )
 
         invalidPayloads.forEach { payload ->
@@ -369,14 +384,14 @@ class QuickerPanelActionsTest {
     }
 
     @Test
-    fun surfacesStableCodeAndMessageFromV7ServerError() {
+    fun surfacesStableCodeAndMessageFromV8ServerError() {
         val error = assertThrows(IllegalArgumentException::class.java) {
             QuickerPanelActionsProtocol.parse(
                 JsonPrimitive(
                     """
                         {
                           "protocol":"quickerlink.panel-actions",
-                          "version":7,
+                          "version":8,
                           "ok":false,
                           "code":"catalog_read_failed",
                           "error":"读取 Quicker 动作目录失败。"
@@ -390,15 +405,34 @@ class QuickerPanelActionsTest {
     }
 
     @Test
+    fun mapsConnectionErrorsToActionableMessages() {
+        mapOf(
+            "secure_websocket_required" to "请先在 Quicker 中启用安全连接 WSS 并重新配对",
+            "invalid_connection_password" to "连接验证码与 Quicker 设置不一致，请重新配对",
+            "authentication_required" to "请先启用 Quicker WSS 服务并重新配对",
+        ).forEach { (code, expectedMessage) ->
+            val error = assertThrows(IllegalArgumentException::class.java) {
+                QuickerPanelActionsProtocol.parse(
+                    JsonPrimitive(
+                        """{"protocol":"quickerlink.panel-actions","version":8,"ok":false,"code":"$code","error":"fallback"}""",
+                    ),
+                )
+            }
+
+            assertEquals("[$code] $expectedMessage", error.message)
+        }
+    }
+
+    @Test
     fun rejectsMalformedOrExtendedServerErrorEnvelopes() {
         listOf(
-            """{"protocol":"quickerlink.panel-actions","version":7,"ok":false,"code":"bad code","error":"失败"}""",
-            """{"protocol":"quickerlink.panel-actions","version":7,"ok":false,"code":"failed","error":""}""",
-            """{"protocol":"quickerlink.panel-actions","version":7,"ok":"false","code":"failed","error":"失败"}""",
-            """{"protocol":"quickerlink.panel-actions","version":7,"code":"failed","error":"失败"}""",
-            """{"protocol":"quickerlink.panel-actions","version":7,"ok":false,"code":7,"error":"失败"}""",
-            """{"protocol":"quickerlink.panel-actions","version":7,"ok":false,"code":"failed","error":7}""",
-            """{"protocol":"quickerlink.panel-actions","version":7,"ok":false,"code":"failed","error":"失败","unexpected":true}""",
+            """{"protocol":"quickerlink.panel-actions","version":8,"ok":false,"code":"bad code","error":"失败"}""",
+            """{"protocol":"quickerlink.panel-actions","version":8,"ok":false,"code":"failed","error":""}""",
+            """{"protocol":"quickerlink.panel-actions","version":8,"ok":"false","code":"failed","error":"失败"}""",
+            """{"protocol":"quickerlink.panel-actions","version":8,"code":"failed","error":"失败"}""",
+            """{"protocol":"quickerlink.panel-actions","version":8,"ok":false,"code":7,"error":"失败"}""",
+            """{"protocol":"quickerlink.panel-actions","version":8,"ok":false,"code":"failed","error":7}""",
+            """{"protocol":"quickerlink.panel-actions","version":8,"ok":false,"code":"failed","error":"失败","unexpected":true}""",
         ).forEach { payload ->
             assertThrows(IllegalArgumentException::class.java) {
                 QuickerPanelActionsProtocol.parse(JsonPrimitive(payload))
@@ -457,7 +491,7 @@ class QuickerPanelActionsTest {
     ): String = """
         {
           "protocol":"quickerlink.panel-actions",
-          "version":7,
+          "version":8,
           "ok":true,
           "capabilities":$CAPABILITIES_JSON,
           "scenes":$scenes$extraRoot
@@ -516,9 +550,13 @@ class QuickerPanelActionsTest {
         const val SECOND_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
         const val QUICKER_ICON = "https://files.getquicker.net/_icons/ABC123.png"
         const val FILE_TRANSFER_JSON = "{\"maxBytes\":67108864,\"chunkBytes\":65536}"
+        const val DESKTOP_PUSH_JSON =
+            "{\"text\":true,\"notification\":true,\"file\":true," +
+                "\"maxTextChars\":16000,\"maxFileBytes\":67108864}"
         const val CAPABILITIES_JSON =
             "{\"stopAction\":true,\"screenCapture\":true,\"screenClick\":true," +
-                "\"clipboardRead\":true,\"systemControl\":true,\"fileTransfer\":$FILE_TRANSFER_JSON}"
+                "\"clipboardRead\":true,\"clipboardWrite\":true,\"systemControl\":true," +
+                "\"fileTransfer\":$FILE_TRANSFER_JSON,\"desktopPush\":$DESKTOP_PUSH_JSON}"
         const val ONE_PIXEL_PNG =
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     }

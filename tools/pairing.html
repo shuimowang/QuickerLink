@@ -67,7 +67,7 @@
           <input id="port" inputmode="numeric" value="668" autocomplete="off" maxlength="5" required>
         </label>
       </div>
-      <label>连接验证码
+      <label>连接验证码（推荐）
         <input id="code" type="password" autocomplete="off" maxlength="256">
       </label>
       <button type="submit">生成配对码</button>
@@ -75,7 +75,7 @@
     </form>
     <section id="output" class="output" hidden>
       <div id="qr" class="qr"></div>
-      <p class="warning">二维码包含连接验证码，请勿分享。</p>
+      <p class="warning">二维码包含连接信息，请勿分享。</p>
       <a id="download" class="download" download="quicker-link-pairing.png">下载 PNG</a>
     </section>
   </main>
@@ -164,6 +164,9 @@
         download.style.display = 'block';
         output.hidden = false;
         main.classList.remove('single-column');
+        status.textContent = code.length === 0
+          ? '已生成无验证码配对码；仅建议在可信局域网使用。'
+          : '已生成带验证码的配对码。';
         if (window.matchMedia('(max-width: 720px)').matches) {
           requestAnimationFrame(() => output.scrollIntoView({ block: 'start' }));
         }

@@ -2,6 +2,8 @@ package app.quickerlink.connection
 
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
+import java.nio.charset.StandardCharsets
+import java.util.Base64
 import java.util.UUID
 
 data class QuickerStoppedAction(
@@ -12,13 +14,13 @@ internal class UnsupportedActionControlVersionException :
     IllegalArgumentException("动作控制协议版本不受支持")
 
 object QuickerActionControlProtocol {
-    private const val STOP_COMMAND_PREFIX = "quickerlink:stop-action:v7:"
+    private const val STOP_COMMAND_PREFIX = "quickerlink:stop-action:v8:"
     private const val PROTOCOL = "quickerlink.stop-action"
     private const val LEGACY_CATALOG_PROTOCOL = "quickerlink.panel-actions"
-    private const val VERSION = 7
+    private const val VERSION = 8
     private const val MAX_PAYLOAD_LENGTH = 1_024
     private const val MAX_ERROR_CODE_LENGTH = 64
-    private val successFields = setOf("protocol", "version", "ok")
+    private val successFields = setOf("protocol", "version", "ok", "actionId")
     private val errorFields = setOf("protocol", "version", "ok", "code")
     private val errorCodePattern = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
     private val errorMessages = mapOf(
@@ -27,16 +29,32 @@ object QuickerActionControlProtocol {
         "self_stop_forbidden" to "不能终止 Quicker Link 自身",
         "service_unavailable" to "Quicker 动作服务暂不可用",
         "action_not_found" to "目标动作不存在，请刷新面板后重试",
+        "action_ambiguous" to "存在多个同名动作，请在手动动作中填写动作 GUID",
         "stop_failed" to "Quicker 未能终止该动作",
+        "secure_websocket_required" to "请先在 Quicker 中启用安全连接 WSS 并重新配对",
+        "invalid_connection_password" to "连接验证码与 Quicker 设置不一致，请重新配对",
+        "authentication_required" to "请先启用 Quicker WSS 服务并重新配对",
     )
 
-    fun stopCommand(actionId: String): String = STOP_COMMAND_PREFIX + canonicalUuid(actionId)
+    fun stopCommand(actionIdentity: String): String {
+        val identity = actionIdentity.trim()
+        require(identity.isNotEmpty() && identity.length <= MAX_ACTION_IDENTITY_LENGTH) {
+            "动作名称或 ID 无效"
+        }
+        val bytes = identity.toByteArray(StandardCharsets.UTF_8)
+        require(bytes.size <= MAX_ACTION_IDENTITY_UTF8_BYTES) { "动作名称或 ID 无效" }
+        val encoded = Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(bytes)
+        require(encoded.length <= MAX_ENCODED_ACTION_IDENTITY_LENGTH) { "动作名称或 ID 无效" }
+        return STOP_COMMAND_PREFIX + encoded
+    }
 
     fun parseStopResponse(
         data: JsonElement?,
-        expectedActionId: String,
+        expectedActionId: String? = null,
     ): QuickerStoppedAction {
-        val expectedId = canonicalUuid(expectedActionId)
+        val expectedId = expectedActionId?.let(::canonicalUuid)
         val root = decodeRoot(data)
         val protocol = root.optionalString("protocol")
         require(protocol == PROTOCOL || protocol == LEGACY_CATALOG_PROTOCOL) {
@@ -62,7 +80,9 @@ object QuickerActionControlProtocol {
         }
 
         root.requireFields(successFields, "终止动作响应格式无效")
-        return QuickerStoppedAction(expectedId)
+        val actionId = canonicalUuid(root.string("actionId"))
+        require(expectedId == null || actionId == expectedId) { "终止动作响应目标不匹配" }
+        return QuickerStoppedAction(actionId)
     }
 
     private fun decodeRoot(data: JsonElement?): JsonObject {
@@ -90,6 +110,10 @@ object QuickerActionControlProtocol {
         }
         return canonical
     }
+
+    private const val MAX_ACTION_IDENTITY_LENGTH = 240
+    private const val MAX_ACTION_IDENTITY_UTF8_BYTES = 384
+    private const val MAX_ENCODED_ACTION_IDENTITY_LENGTH = 512
 
     private fun JsonObject.requireFields(expected: Set<String>, message: String) {
         require(keySet() == expected) { message }

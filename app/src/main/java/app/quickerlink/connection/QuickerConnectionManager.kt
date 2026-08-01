@@ -405,7 +405,11 @@ class QuickerConnectionManager private constructor(
                     delay(authTimeoutMs)
                     val timedOut = handleDisconnect(
                         token = token,
-                        reason = "等待认证响应超时",
+                        reason = if (config.password.isEmpty()) {
+                            "未收到无验证码连接响应；若 Quicker 已设置验证码，请在 App 中填写"
+                        } else {
+                            "等待认证响应超时"
+                        },
                         onlyIfAuthenticating = true,
                     )
                     if (timedOut) {
@@ -535,9 +539,7 @@ class QuickerConnectionManager private constructor(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            val detail = t.message?.takeIf(String::isNotBlank)
-                ?: response?.message?.takeIf(String::isNotBlank)
-                ?: "WebSocket 连接失败"
+            val detail = connectionFailureDetail(t, response?.message)
             handleDisconnect(token, detail)
         }
     }
@@ -549,6 +551,8 @@ class QuickerConnectionManager private constructor(
         webSocket: WebSocket,
         message: QuickerMessage,
     ): Boolean {
+        var authenticated = false
+        var failureReason: String? = null
         val accepted = synchronized(lock) {
             val replyMatches = if (config.password.isEmpty()) {
                 authRequestSerial == null && message.replyTo == PASSWORDLESS_AUTH_REPLY_TO
@@ -568,28 +572,33 @@ class QuickerConnectionManager private constructor(
                 authRequestSerial = null
 
                 if (message.isSuccess == true) {
+                    authenticated = true
                     retryAttempt = 0
                     readyGeneration = token
                     mutableState.value = QuickerConnectionState.Ready(endpoint)
                 } else {
+                    failureReason = message.message?.takeIf(String::isNotBlank) ?: "验证码不正确"
                     desiredConfig = null
                     readyGeneration = null
                     generation.compareAndSet(token, token + 1)
                     socket = null
                     discardQueuedCommandsLocked()
-                    mutableState.value = QuickerConnectionState.AuthFailed(
-                        message.message?.takeIf(String::isNotBlank) ?: "验证码不正确",
-                    )
+                    mutableState.value = QuickerConnectionState.AuthFailed(requireNotNull(failureReason))
                 }
                 true
             }
         }
         if (!accepted) return false
 
-        if (message.isSuccess == true) {
-            mutableEvents.tryEmit(QuickerConnectionEvent(QuickerEventDirection.SYSTEM, "认证成功"))
+        if (authenticated) {
+            val summary = if (config.password.isEmpty()) {
+                "连接成功（未使用验证码）"
+            } else {
+                "认证成功"
+            }
+            mutableEvents.tryEmit(QuickerConnectionEvent(QuickerEventDirection.SYSTEM, summary))
         } else {
-            val reason = message.message?.takeIf(String::isNotBlank) ?: "验证码不正确"
+            val reason = failureReason ?: "验证码不正确"
             mutableEvents.tryEmit(QuickerConnectionEvent(QuickerEventDirection.SYSTEM, "认证失败：$reason"))
             webSocket.close(1000, "Authentication failed")
         }
@@ -769,4 +778,20 @@ internal fun compactLogText(value: String, maxLength: Int = 180): String {
         .trim()
         .ifEmpty { "无详细信息" }
     return if (compact.length <= maxLength) compact else compact.take(maxLength - 3) + "..."
+}
+
+internal fun connectionFailureDetail(error: Throwable, responseMessage: String? = null): String {
+    val causes = generateSequence(error) { it.cause }.take(12).toList()
+    val certificateFailure = causes.any { cause ->
+        cause is java.security.cert.CertPathValidatorException ||
+            cause.message?.contains("trust anchor", ignoreCase = true) == true ||
+            cause.message?.contains("certification path", ignoreCase = true) == true
+    }
+    if (certificateFailure) {
+        return "WSS 证书未被手机信任。请校准系统时间，并检查 VPN、代理或 HTTPS 证书拦截后重试"
+    }
+
+    return causes.firstNotNullOfOrNull { it.message?.takeIf(String::isNotBlank) }
+        ?: responseMessage?.takeIf(String::isNotBlank)
+        ?: "WebSocket 连接失败"
 }

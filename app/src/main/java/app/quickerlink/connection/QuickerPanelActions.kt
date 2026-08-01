@@ -29,14 +29,24 @@ data class QuickerPanelActionCatalog(
         get() = scenes.flatMap(QuickerPanelScene::actions)
 }
 
+data class QuickerDesktopPushCapabilities(
+    val text: Boolean = true,
+    val notification: Boolean = true,
+    val file: Boolean = true,
+    val maxTextChars: Int = QuickerToolboxProtocol.MAX_CLIPBOARD_CHARS,
+    val maxFileBytes: Long = QuickerToolboxProtocol.MAX_FILE_BYTES,
+)
+
 data class QuickerLinkCapabilities(
     val stopAction: Boolean = true,
     val screenCapture: Boolean = true,
     val screenClick: Boolean = true,
     val clipboardRead: Boolean = true,
+    val clipboardWrite: Boolean = true,
     val systemControl: Boolean = true,
     val maxFileBytes: Long = QuickerToolboxProtocol.MAX_FILE_BYTES,
     val chunkBytes: Int = QuickerToolboxProtocol.CHUNK_BYTES,
+    val desktopPush: QuickerDesktopPushCapabilities = QuickerDesktopPushCapabilities(),
 )
 
 internal class UnsupportedPanelCatalogVersionException :
@@ -44,12 +54,12 @@ internal class UnsupportedPanelCatalogVersionException :
 
 object QuickerPanelActionsProtocol {
     const val COMPANION_SHARED_ACTION_ID = "b02b2732-f087-4e45-416d-08deee3e76ba"
-    const val LIST_COMMAND = "quickerlink:list-panel-actions:v7"
+    const val LIST_COMMAND = "quickerlink:list-panel-actions:v8"
     const val GLOBAL_SCENE = "_global"
     const val COMMON_SCENE = "common"
 
     private const val PROTOCOL = "quickerlink.panel-actions"
-    private const val VERSION = 7
+    private const val VERSION = 8
     private const val MAX_PAYLOAD_LENGTH = 262_144
     private const val MAX_GROUPS_PER_SCENE = 10_000
     private const val MAX_ACTIONS = 10_000
@@ -70,14 +80,28 @@ object QuickerPanelActionsProtocol {
         "screenCapture",
         "screenClick",
         "clipboardRead",
+        "clipboardWrite",
         "systemControl",
         "fileTransfer",
+        "desktopPush",
     )
     private val fileTransferCapabilityFields = setOf("maxBytes", "chunkBytes")
+    private val desktopPushCapabilityFields = setOf(
+        "text",
+        "notification",
+        "file",
+        "maxTextChars",
+        "maxFileBytes",
+    )
     private val sceneFields = setOf("scene", "groups", "actions")
     private val actionFields = setOf("id", "title", "group", "order", "icon", "parameterChoices")
     private val parameterChoiceFields = setOf("label", "value")
     private val errorCodePattern = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+    private val connectionErrorMessages = mapOf(
+        "secure_websocket_required" to "请先在 Quicker 中启用安全连接 WSS 并重新配对",
+        "invalid_connection_password" to "连接验证码与 Quicker 设置不一致，请重新配对",
+        "authentication_required" to "请先启用 Quicker WSS 服务并重新配对",
+    )
 
     fun parse(data: JsonElement?): QuickerPanelActionCatalog {
         val root = decodeRoot(data)
@@ -92,7 +116,7 @@ object QuickerPanelActionsProtocol {
                 "动作目录错误代码无效"
             }
             val error = validateText(root.string("error"), MAX_ERROR_LENGTH, "动作目录错误消息")
-            throw IllegalArgumentException("[$code] $error")
+            throw IllegalArgumentException("[$code] ${connectionErrorMessages[code] ?: error}")
         }
 
         root.requireFields(successFields, "动作目录响应格式无效")
@@ -102,6 +126,7 @@ object QuickerPanelActionsProtocol {
         require(capabilities.boolean("screenCapture")) { "当前 Quicker Link 动作不支持屏幕快照" }
         require(capabilities.boolean("screenClick")) { "当前 Quicker Link 动作不支持屏幕点击" }
         require(capabilities.boolean("clipboardRead")) { "当前 Quicker Link 动作不支持读取剪贴板" }
+        require(capabilities.boolean("clipboardWrite")) { "当前 Quicker Link 动作不支持写入剪贴板" }
         require(capabilities.boolean("systemControl")) { "当前 Quicker Link 动作不支持电脑控制" }
         val fileTransfer = capabilities.obj("fileTransfer", "动作目录缺少文件传输能力", "文件传输能力格式无效")
         fileTransfer.requireFields(fileTransferCapabilityFields, "文件传输能力字段无效")
@@ -109,6 +134,19 @@ object QuickerPanelActionsProtocol {
         val chunkBytes = fileTransfer.int("chunkBytes")
         require(maxFileBytes == QuickerToolboxProtocol.MAX_FILE_BYTES) { "文件传输大小上限不受支持" }
         require(chunkBytes == QuickerToolboxProtocol.CHUNK_BYTES) { "文件分块大小不受支持" }
+        val desktopPush = capabilities.obj("desktopPush", "动作目录缺少电脑推送能力", "电脑推送能力格式无效")
+        desktopPush.requireFields(desktopPushCapabilityFields, "电脑推送能力字段无效")
+        require(desktopPush.boolean("text")) { "当前 Quicker Link 动作不支持电脑推送文本" }
+        require(desktopPush.boolean("notification")) { "当前 Quicker Link 动作不支持电脑推送通知" }
+        require(desktopPush.boolean("file")) { "当前 Quicker Link 动作不支持电脑推送文件" }
+        val maxPushTextChars = desktopPush.int("maxTextChars")
+        val maxPushFileBytes = desktopPush.long("maxFileBytes")
+        require(maxPushTextChars == QuickerToolboxProtocol.MAX_CLIPBOARD_CHARS) {
+            "电脑推送文本上限不受支持"
+        }
+        require(maxPushFileBytes == QuickerToolboxProtocol.MAX_FILE_BYTES) {
+            "电脑推送文件上限不受支持"
+        }
         val scenesJson = root.array("scenes", "动作目录缺少场景", "动作场景格式无效")
         require(scenesJson.size() == expectedScenes.size) { "动作场景数量无效" }
 
@@ -122,9 +160,14 @@ object QuickerPanelActionsProtocol {
             scenes = scenes,
             capabilities = QuickerLinkCapabilities(
                 screenClick = true,
+                clipboardWrite = true,
                 systemControl = true,
                 maxFileBytes = maxFileBytes,
                 chunkBytes = chunkBytes,
+                desktopPush = QuickerDesktopPushCapabilities(
+                    maxTextChars = maxPushTextChars,
+                    maxFileBytes = maxPushFileBytes,
+                ),
             ),
         )
     }

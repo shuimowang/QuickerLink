@@ -12,10 +12,14 @@ import java.util.Base64
 
 class QuickerToolboxProtocolTest {
     @Test
-    fun `builds strict v7 commands and canonical chunk data`() {
+    fun `builds strict v8 commands and canonical chunk data`() {
         assertEquals(
-            "quickerlink:toolbox:v7:{\"op\":\"clipboard.read\"}",
+            "quickerlink:toolbox:v8:{\"op\":\"clipboard.read\"}",
             QuickerToolboxProtocol.clipboardReadCommand(),
+        )
+        assertEquals(
+            "quickerlink:toolbox:v8:{\"op\":\"clipboard.write\",\"text\":\"手机文本\"}",
+            QuickerToolboxProtocol.clipboardWriteCommand("手机文本"),
         )
 
         val begin = commandJson(
@@ -50,6 +54,20 @@ class QuickerToolboxProtocolTest {
         assertEquals("system.command", system["op"].asString)
         assertEquals(setOf("op", "command"), system.keySet())
         assertEquals("restart-quicker", system["command"].asString)
+    }
+
+    @Test
+    fun `rejects invalid clipboard write text`() {
+        listOf(
+            "",
+            "   ",
+            "x".repeat(16_001),
+            "\u0000",
+        ).forEach { text ->
+            assertThrows(IllegalArgumentException::class.java) {
+                QuickerToolboxProtocol.clipboardWriteCommand(text)
+            }
+        }
     }
 
     @Test
@@ -149,6 +167,13 @@ class QuickerToolboxProtocolTest {
         assertEquals(
             QuickerToolboxResult.Completed,
             QuickerToolboxProtocol.parse(
+                JsonPrimitive(success("clipboard.write")),
+                QuickerToolboxProtocol.OP_CLIPBOARD_WRITE,
+            ),
+        )
+        assertEquals(
+            QuickerToolboxResult.Completed,
+            QuickerToolboxProtocol.parse(
                 JsonPrimitive(success("download.finish")),
                 QuickerToolboxProtocol.OP_DOWNLOAD_FINISH,
             ),
@@ -189,19 +214,47 @@ class QuickerToolboxProtocolTest {
         assertEquals("transfer_limit_reached", capacityError.code)
         assertEquals("电脑端暂存传输数量已达上限", capacityError.message)
 
+        val authenticationError = assertThrows(QuickerToolboxRemoteException::class.java) {
+            QuickerToolboxProtocol.parse(
+                JsonPrimitive(error("authentication_required")),
+                QuickerToolboxProtocol.OP_DOWNLOAD_PICK,
+            )
+        }
+        assertEquals("authentication_required", authenticationError.code)
+        assertEquals("请先启用 Quicker WSS 服务并重新配对", authenticationError.message)
+
+        mapOf(
+            "secure_websocket_required" to "请先在 Quicker 中启用安全连接 WSS 并重新配对",
+            "invalid_connection_password" to "连接验证码与 Quicker 设置不一致，请重新配对",
+        ).forEach { (code, message) ->
+            val connectionError = assertThrows(QuickerToolboxRemoteException::class.java) {
+                QuickerToolboxProtocol.parse(
+                    JsonPrimitive(error(code)),
+                    QuickerToolboxProtocol.OP_DOWNLOAD_PICK,
+                )
+            }
+            assertEquals(code, connectionError.code)
+            assertEquals(message, connectionError.message)
+        }
+
         mapOf(
             "screen_target_expired" to "屏幕画面已失效，请刷新后重试",
             "screen_click_failed" to "电脑未能完成屏幕点击",
+            "clipboard_write_failed" to "无法写入电脑剪贴板",
             "system_command_failed" to "电脑未能执行系统命令",
         ).forEach { (code, message) ->
-            val operation = if (code.startsWith("screen_")) "screen.click" else "system.command"
+            val operation = when {
+                code.startsWith("screen_") -> "screen.click"
+                code.startsWith("clipboard_") -> "clipboard.write"
+                else -> "system.command"
+            }
             val remote = assertThrows(QuickerToolboxRemoteException::class.java) {
                 QuickerToolboxProtocol.parse(
                     JsonPrimitive(error(code, operation)),
-                    if (operation == "screen.click") {
-                        QuickerToolboxProtocol.OP_SCREEN_CLICK
-                    } else {
-                        QuickerToolboxProtocol.OP_SYSTEM_COMMAND
+                    when (operation) {
+                        "screen.click" -> QuickerToolboxProtocol.OP_SCREEN_CLICK
+                        "clipboard.write" -> QuickerToolboxProtocol.OP_CLIPBOARD_WRITE
+                        else -> QuickerToolboxProtocol.OP_SYSTEM_COMMAND
                     },
                 )
             }
@@ -231,7 +284,7 @@ class QuickerToolboxProtocolTest {
 
         listOf(
             """{"protocol":"unexpected","version":5,"ok":true,"op":"clipboard.read","text":""}""",
-            """{"protocol":"quickerlink.panel-actions","version":7,"ok":true,"op":"clipboard.read","text":""}""",
+            """{"protocol":"quickerlink.panel-actions","version":8,"ok":true,"op":"clipboard.read","text":""}""",
             """{"version":5,"ok":true,"op":"clipboard.read","text":""}""",
             """{"protocol":"quickerlink.toolbox","version":"5","ok":true,"op":"clipboard.read","text":""}""",
         ).forEach { payload ->
@@ -305,7 +358,7 @@ class QuickerToolboxProtocolTest {
     @Test
     fun `rejects duplicate response fields before parsing values`() {
         val payload =
-            """{"protocol":"quickerlink.toolbox","version":7,"ok":false,"ok":true,"op":"clipboard.read","text":"secret"}"""
+            """{"protocol":"quickerlink.toolbox","version":8,"ok":false,"ok":true,"op":"clipboard.read","text":"secret"}"""
         assertThrows(IllegalArgumentException::class.java) {
             QuickerToolboxProtocol.parse(JsonPrimitive(payload), QuickerToolboxProtocol.OP_CLIPBOARD_READ)
         }
@@ -347,14 +400,14 @@ class QuickerToolboxProtocolTest {
     }
 
     private fun commandJson(command: String) = JsonParser.parseString(
-        command.removePrefix("quickerlink:toolbox:v7:"),
+        command.removePrefix("quickerlink:toolbox:v8:"),
     ).asJsonObject
 
     private fun success(operation: String, extra: String = ""): String =
-        """{"protocol":"quickerlink.toolbox","version":7,"ok":true,"op":"$operation"$extra}"""
+        """{"protocol":"quickerlink.toolbox","version":8,"ok":true,"op":"$operation"$extra}"""
 
     private fun error(code: String, operation: String = "download.pick"): String =
-        """{"protocol":"quickerlink.toolbox","version":7,"ok":false,"op":"$operation","code":"$code"}"""
+        """{"protocol":"quickerlink.toolbox","version":8,"ok":false,"op":"$operation","code":"$code"}"""
 
     private companion object {
         const val TRANSFER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"

@@ -58,13 +58,14 @@ internal class QuickerToolboxRemoteException(
 ) : RuntimeException(message)
 
 object QuickerToolboxProtocol {
-    const val VERSION = 7
+    const val VERSION = 8
     const val MAX_FILE_BYTES = 64L * 1024 * 1024
     const val CHUNK_BYTES = 64 * 1024
     const val MAX_CLIPBOARD_CHARS = 16_000
     const val NORMALIZED_COORDINATE_MAX = 1_000_000
 
     const val OP_CLIPBOARD_READ = "clipboard.read"
+    const val OP_CLIPBOARD_WRITE = "clipboard.write"
     const val OP_SCREEN_CAPTURE = "screen.capture"
     const val OP_SCREEN_CLICK = "screen.click"
     const val OP_DOWNLOAD_PICK = "download.pick"
@@ -76,7 +77,7 @@ object QuickerToolboxProtocol {
     const val OP_TRANSFER_CANCEL = "transfer.cancel"
     const val OP_SYSTEM_COMMAND = "system.command"
 
-    private const val COMMAND_PREFIX = "quickerlink:toolbox:v7:"
+    private const val COMMAND_PREFIX = "quickerlink:toolbox:v8:"
     private const val PROTOCOL = "quickerlink.toolbox"
     private const val LEGACY_CATALOG_PROTOCOL = "quickerlink.panel-actions"
     private const val MAX_PAYLOAD_LENGTH = 100_000
@@ -92,7 +93,11 @@ object QuickerToolboxProtocol {
         "invalid_request" to "Quicker Link 请求格式无效",
         "unsupported_operation" to "Quicker Link 动作不支持这项功能",
         "clipboard_read_failed" to "无法读取电脑剪贴板",
+        "clipboard_write_failed" to "无法写入电脑剪贴板",
         "clipboard_too_large" to "电脑剪贴板文本过大",
+        "secure_websocket_required" to "请先在 Quicker 中启用安全连接 WSS 并重新配对",
+        "invalid_connection_password" to "连接验证码与 Quicker 设置不一致，请重新配对",
+        "authentication_required" to "请先启用 Quicker WSS 服务并重新配对",
         "screen_capture_failed" to "无法截取电脑屏幕",
         "screen_target_expired" to "屏幕画面已失效，请刷新后重试",
         "screen_click_failed" to "电脑未能完成屏幕点击",
@@ -116,6 +121,16 @@ object QuickerToolboxProtocol {
     )
 
     fun clipboardReadCommand(): String = command(OP_CLIPBOARD_READ)
+
+    fun clipboardWriteCommand(text: String): String {
+        require(
+            text.isNotBlank() &&
+                text.length <= MAX_CLIPBOARD_CHARS &&
+                text.toByteArray(StandardCharsets.UTF_8).size <= 48 * 1024 &&
+                text.none { it.isISOControl() && it != '\r' && it != '\n' && it != '\t' },
+        ) { "剪贴板文本格式无效" }
+        return command(OP_CLIPBOARD_WRITE, "text" to text)
+    }
 
     fun screenCaptureCommand(): String = command(OP_SCREEN_CAPTURE)
 
@@ -214,6 +229,7 @@ object QuickerToolboxProtocol {
             OP_DOWNLOAD_FINISH,
             OP_TRANSFER_CANCEL,
             OP_SCREEN_CLICK,
+            OP_CLIPBOARD_WRITE,
             OP_SYSTEM_COMMAND,
             -> {
                 root.requireFields(commonSuccessFields, "工具箱完成响应格式无效")
@@ -457,6 +473,7 @@ object QuickerToolboxProtocol {
 
     private val supportedOperations = setOf(
         OP_CLIPBOARD_READ,
+        OP_CLIPBOARD_WRITE,
         OP_SCREEN_CAPTURE,
         OP_SCREEN_CLICK,
         OP_DOWNLOAD_PICK,

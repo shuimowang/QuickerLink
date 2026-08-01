@@ -65,7 +65,10 @@ object QuickerPairingCode {
         val port = portText.toIntOrNull()
         require(port != null && port in 1..65535) { "配对码中的端口无效" }
         val password = parameters["code"].orEmpty()
-        require(password.length <= MAX_PASSWORD_LENGTH && password.none(Char::isISOControl)) {
+        require(
+            password.length <= MAX_PASSWORD_LENGTH &&
+                password.none(Char::isISOControl),
+        ) {
             "配对码中的验证码无效"
         }
         val serviceActionId = parameters["serviceActionId"]?.let(::canonicalUuid)
@@ -76,7 +79,10 @@ object QuickerPairingCode {
         val ipAddress = QuickerEndpoint.normalizeIpv4(config.ipAddress)
         require(QuickerEndpoint.isPrivateIpv4(ipAddress)) { "配对地址必须是局域网 IPv4" }
         require(config.port in 1..65535) { "端口必须在 1 到 65535 之间" }
-        require(config.password.length <= MAX_PASSWORD_LENGTH && config.password.none(Char::isISOControl)) {
+        require(
+            config.password.length <= MAX_PASSWORD_LENGTH &&
+                config.password.none(Char::isISOControl),
+        ) {
             "验证码无效"
         }
         val serviceActionId = config.serviceActionId?.let(::canonicalUuid)

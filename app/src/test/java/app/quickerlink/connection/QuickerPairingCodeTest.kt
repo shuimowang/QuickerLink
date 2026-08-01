@@ -18,11 +18,10 @@ class QuickerPairingCodeTest {
     }
 
     @Test
-    fun `accepts a passwordless private LAN pairing code`() {
-        assertEquals(
-            QuickerPairingConfig("10.0.0.8", 1668, ""),
-            QuickerPairingCode.parse("quickerlink://pair?v=1&ip=10.0.0.8&port=1668&code="),
-        )
+    fun `round trips a passwordless private LAN pairing code`() {
+        val config = QuickerPairingConfig("10.0.0.8", 1668, "")
+
+        assertEquals(config, QuickerPairingCode.parse(QuickerPairingCode.encode(config)))
     }
 
     @Test
@@ -104,6 +103,9 @@ class QuickerPairingCodeTest {
 
     @Test
     fun `rejects unsafe encode inputs`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            QuickerPairingCode.encode(QuickerPairingConfig("192.168.1.2", 668, "x".repeat(257)))
+        }
         assertThrows(IllegalArgumentException::class.java) {
             QuickerPairingCode.encode(QuickerPairingConfig("8.8.8.8", 668, "x"))
         }

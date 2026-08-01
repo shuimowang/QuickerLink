@@ -33,6 +33,8 @@ class MainActivity : ComponentActivity() {
     private val viewModel: QuickerViewModel by viewModels()
     private val cameraPermissionGranted = mutableStateOf(false)
     private val cameraPermissionPermanentlyDenied = mutableStateOf(false)
+    private val notificationPermissionGranted = mutableStateOf(false)
+    private val notificationPermissionPermanentlyDenied = mutableStateOf(false)
     private var pendingInstallUri: Uri? = null
     private val processLifecycleObserver = object : DefaultLifecycleObserver {
         override fun onStart(owner: LifecycleOwner) = viewModel.onAppForegrounded()
@@ -54,6 +56,21 @@ class MainActivity : ComponentActivity() {
         cameraPermissionGranted.value = granted
         cameraPermissionPermanentlyDenied.value = !granted &&
             !ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.CAMERA)
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        notificationPermissionGranted.value = granted
+        notificationPermissionPermanentlyDenied.value =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !granted &&
+            !ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.POST_NOTIFICATIONS)
+        if (granted) {
+            notificationPermissionPermanentlyDenied.value = false
+            viewModel.setBackgroundConnectionEnabled(true)
+        } else {
+            viewModel.reportBackgroundConnectionPermissionDenied()
+        }
     }
 
     private val unknownAppsSettingsLauncher = registerForActivityResult(
@@ -80,6 +97,8 @@ class MainActivity : ComponentActivity() {
 
         viewModel.onLocalNetworkPermissionStatus(hasLocalNetworkPermission())
         cameraPermissionGranted.value = hasCameraPermission()
+        notificationPermissionGranted.value = hasNotificationPermission()
+        viewModel.onNotificationPermissionStatus(notificationPermissionGranted.value)
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -95,6 +114,9 @@ class MainActivity : ComponentActivity() {
                     cameraPermissionGranted = cameraPermissionGranted.value,
                     cameraPermissionPermanentlyDenied = cameraPermissionPermanentlyDenied.value,
                     onRequestCameraPermission = ::requestCameraPermission,
+                    notificationPermissionGranted = notificationPermissionGranted.value,
+                    notificationPermissionPermanentlyDenied = notificationPermissionPermanentlyDenied.value,
+                    onRequestNotificationPermission = ::requestNotificationPermission,
                     onOpenAppSettings = ::openAppSettings,
                     onOpenExternalUrl = ::openExternalUrl,
                     onChooseFile = ::chooseFile,
@@ -108,6 +130,11 @@ class MainActivity : ComponentActivity() {
         viewModel.onLocalNetworkPermissionStatus(hasLocalNetworkPermission())
         cameraPermissionGranted.value = hasCameraPermission()
         if (cameraPermissionGranted.value) cameraPermissionPermanentlyDenied.value = false
+        notificationPermissionGranted.value = hasNotificationPermission()
+        if (notificationPermissionGranted.value) {
+            notificationPermissionPermanentlyDenied.value = false
+        }
+        viewModel.onNotificationPermissionStatus(notificationPermissionGranted.value)
     }
 
     override fun onDestroy() {
@@ -133,6 +160,20 @@ class MainActivity : ComponentActivity() {
 
     private fun requestCameraPermission() {
         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    private fun hasNotificationPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionGranted.value = true
+            viewModel.setBackgroundConnectionEnabled(true)
+            return
+        }
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     private fun chooseFile() {

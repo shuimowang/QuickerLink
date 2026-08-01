@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.5.0-alpha.1] - 2026-08-01
+
+### Added
+
+- Let computer-local Quicker automations send bounded text, Android notifications, or file offers to currently authenticated phones
+- Add a default-off foreground-only clipboard text sync with sensitive-clip filtering, bounded polling, and in-memory echo suppression
+- Add a default-off Android `connectedDevice` foreground service that retains the WSS session during normal lock-screen and app-switch transitions, with a persistent notification and Stop action
+- Add system speech-recognition entry points for the transfer editor and post-action quick input
+- Let the action-sent Snackbar open quick input with an optional Enter key, enabled by default
+- Allow manually added action shortcuts to request termination by action name or GUID
+- Add an optional, default-off desktop text history managed from the companion pairing window, bounded to 100 entries and 1 MiB
+
+### Changed
+
+- Upgrade the strict catalog, action-control, toolbox, clipboard-write, and desktop-push capability contract to v8
+- Recommend a Quicker verification code with an explicit risk warning while retaining compatibility with passwordless, certificate-validated WSS
+- Keep explicit screen click mode active and refresh it through serialized snapshots at roughly 1.2-second intervals instead of returning to static view after each click
+- Consolidate clipboard copy and current-window paste into the transfer text editor, including a clear control, and move panel refresh beside the action-list count
+- Retain one application-level WSS connection owner so an enabled foreground service can outlive the Activity without creating a second socket
+- Require Android notification permission before background retention and keep clipboard synchronization foreground-only even when background connection is enabled
+- Document the 64 MiB limit as a bound on 1,024 action-channel chunks, Base64 expansion, temporary storage, and transfer time rather than a WebSocket limit
+
+### Fixed
+
+- Add the public ISRG Root X2 trust anchor only for `lan.quicker.cc` while retaining system trust and hostname validation, improving diagnostics for certificate-chain failures without adding a cleartext or trust-all fallback
+- Ignore Quicker's preliminary passwordless success form when the App has supplied a verification code, then authenticate only from the matching code-request response
+- Return concise computer-push and clipboard summaries without placing full text, action catalogs, or file metadata into connection logs
+
+### Security
+
+- Keep passwordless compatibility explicit: an empty client code accepts only the passwordless handshake, while a configured client never silently downgrades
+- Keep WSS connection and discovery traffic direct and proxy-free; no `VpnService`, system proxy, SMS-read, or SMS-receive capability is added
+- Restrict desktop-to-phone file paths to computer-local Quicker triggers and require explicit phone acceptance before download
+
 ## [0.4.0-alpha.1] - 2026-07-31
 
 ### Added

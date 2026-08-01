@@ -31,6 +31,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
+import java.security.cert.CertPathValidatorException
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -334,6 +335,31 @@ class QuickerConnectionManagerTest {
     }
 
     @Test
+    fun `configured auth ignores passwordless handshake and waits for its matching reply`() = runTest {
+        val factory = FakeWebSocketFactory()
+        val manager = QuickerConnectionManager(
+            socketFactory = factory,
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+        manager.connect(CONFIG)
+        val socket = factory.latestSocket()
+        socket.open()
+        val authSerial = requireNotNull(
+            socket.sentTexts.map(QuickerProtocol::parse).last().serial,
+        )
+
+        socket.receive("""{"messageType":6,"replyTo":0,"isSuccess":true}""")
+
+        assertEquals(QuickerConnectionState.Authenticating, manager.state.value)
+        assertEquals(null, socket.lastCloseCode)
+
+        socket.receive("""{"messageType":6,"replyTo":$authSerial,"isSuccess":true}""")
+
+        assertTrue(manager.state.value is QuickerConnectionState.Ready)
+        manager.close()
+    }
+
+    @Test
     fun `oversized wss text is rejected before protocol parsing`() = runTest {
         val payloads = listOf(
             """{"messageType":6,"replyTo":1,"isSuccess":true,"padding":"${"x".repeat(MAX_WSS_TEXT_CHARACTERS)}"}""",
@@ -433,6 +459,20 @@ class QuickerConnectionManagerTest {
         val compact = compactLogText("x".repeat(500), maxLength = 20)
         assertEquals(20, compact.length)
         assertTrue(compact.endsWith("..."))
+    }
+
+    @Test
+    fun `certificate path failures have an actionable wss message`() {
+        val failure = IOException(
+            "handshake failed",
+            CertPathValidatorException("Trust anchor for certification path not found"),
+        )
+
+        val detail = connectionFailureDetail(failure)
+
+        assertTrue(detail.contains("WSS"))
+        assertTrue(detail.contains("VPN"))
+        assertFalse(detail.contains("Trust anchor"))
     }
 
     @Test
