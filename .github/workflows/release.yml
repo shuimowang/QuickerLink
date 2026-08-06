@@ -5,24 +5,42 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing v* tag to build and publish
+        required: true
+        type: string
 
 permissions: {}
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'v'))
     permissions:
       contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - name: Validate release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$RELEASE_TAG")"
 
       - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
         with:
@@ -73,14 +91,14 @@ jobs:
           test -f "$apk"
           test -f "$metadata"
           version_name="$(jq -r '.elements[0].versionName' "$metadata")"
-          test "$GITHUB_REF_NAME" = "v$version_name"
+          test "$RELEASE_TAG" = "v$version_name"
           signature_report="$RUNNER_TEMP/apksigner-report.txt"
           expected_certificate="55faf4a1587b587abf0e427c0802993235dae81e3c05b621c2fed3f57a6089c7"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" | tee "$signature_report"
           grep -Fqx "Number of signers: 1" "$signature_report"
           grep -Fqx "Signer #1 certificate SHA-256 digest: $expected_certificate" "$signature_report"
           mkdir -p dist
-          release_apk="quicker-link-${GITHUB_REF_NAME}-release.apk"
+          release_apk="quicker-link-${RELEASE_TAG}-release.apk"
           cp "$apk" "dist/$release_apk"
           cd dist
           sha256sum "$release_apk" > "$release_apk.sha256"
@@ -90,13 +108,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            "dist/quicker-link-${GITHUB_REF_NAME}-release.apk" \
-            "dist/quicker-link-${GITHUB_REF_NAME}-release.apk.sha256" \
+          gh release create "$RELEASE_TAG" \
+            "dist/quicker-link-${RELEASE_TAG}-release.apk" \
+            "dist/quicker-link-${RELEASE_TAG}-release.apk.sha256" \
             --verify-tag \
             --prerelease \
             --generate-notes \
-            --title "Quicker Link $GITHUB_REF_NAME"
+            --title "Quicker Link $RELEASE_TAG"
 
       - name: Remove decoded keystore
         if: always()
@@ -108,6 +126,8 @@ jobs:
       actions: write
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
     steps:
       - name: Dispatch Pages deployment from main
@@ -117,4 +137,4 @@ jobs:
           gh workflow run pages.yml
           --repo "$GITHUB_REPOSITORY"
           --ref main
-          --field expected_release_tag="$GITHUB_REF_NAME"
+          --field expected_release_tag="$RELEASE_TAG"
