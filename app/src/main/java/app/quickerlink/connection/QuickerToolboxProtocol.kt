@@ -1,5 +1,6 @@
 package app.quickerlink.connection
 
+import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import java.nio.charset.StandardCharsets
@@ -16,6 +17,14 @@ data class QuickerTransferDescriptor(
     val chunkSize: Int,
 )
 
+data class QuickerDesktopWindow(
+    val token: String,
+    val title: String,
+    val processName: String,
+    val icon: String?,
+    val active: Boolean,
+)
+
 sealed interface QuickerToolboxResult {
     data class Clipboard(val text: String) : QuickerToolboxResult
     data class Transfer(val descriptor: QuickerTransferDescriptor) : QuickerToolboxResult
@@ -23,6 +32,7 @@ sealed interface QuickerToolboxResult {
         val descriptor: QuickerTransferDescriptor,
         val captureId: String,
     ) : QuickerToolboxResult
+    data class Windows(val items: List<QuickerDesktopWindow>) : QuickerToolboxResult
     data class DownloadChunk(
         val transferId: String,
         val offset: Long,
@@ -58,7 +68,7 @@ internal class QuickerToolboxRemoteException(
 ) : RuntimeException(message)
 
 object QuickerToolboxProtocol {
-    const val VERSION = 8
+    const val VERSION = 9
     const val MAX_FILE_BYTES = 64L * 1024 * 1024
     const val CHUNK_BYTES = 64 * 1024
     const val MAX_CLIPBOARD_CHARS = 16_000
@@ -76,15 +86,23 @@ object QuickerToolboxProtocol {
     const val OP_UPLOAD_FINISH = "upload.finish"
     const val OP_TRANSFER_CANCEL = "transfer.cancel"
     const val OP_SYSTEM_COMMAND = "system.command"
+    const val OP_WINDOWS_LIST = "windows.list"
+    const val OP_WINDOWS_ACTIVATE = "windows.activate"
 
-    private const val COMMAND_PREFIX = "quickerlink:toolbox:v8:"
+    private const val COMMAND_PREFIX = "quickerlink:toolbox:v9:"
     private const val PROTOCOL = "quickerlink.toolbox"
     private const val LEGACY_CATALOG_PROTOCOL = "quickerlink.panel-actions"
-    private const val MAX_PAYLOAD_LENGTH = 100_000
+    private const val MAX_COMMAND_LENGTH = 100_000
+    private const val MAX_RESPONSE_LENGTH = 100_000
     private const val MAX_FILE_NAME_LENGTH = 120
     private const val MAX_MIME_LENGTH = 127
     private const val MAX_ERROR_CODE_LENGTH = 64
     private const val MAX_LOCATION_LENGTH = 2_048
+    private const val MAX_WINDOWS = 48
+    private const val MAX_WINDOW_TITLE_LENGTH = 200
+    private const val MAX_PROCESS_NAME_LENGTH = 120
+    private const val MAX_WINDOW_ICON_LENGTH = 22_000
+    private const val MAX_WINDOW_ICON_BYTES = 16_384
     private val commonSuccessFields = setOf("protocol", "version", "ok", "op")
     private val errorFields = commonSuccessFields + "code"
     private val errorCodePattern = Regex("[a-z][a-z0-9_]{0,63}")
@@ -116,6 +134,9 @@ object QuickerToolboxProtocol {
         "storage_unavailable" to "电脑存储暂不可用",
         "save_failed" to "电脑保存文件失败",
         "system_command_failed" to "电脑未能执行系统命令",
+        "window_list_failed" to "无法读取电脑窗口列表",
+        "window_token_expired" to "窗口列表已失效，请刷新后重试",
+        "window_activate_failed" to "电脑未能切换到该窗口",
         "response_too_large" to "Quicker Link 响应过大",
         "internal_error" to "Quicker Link 动作执行失败",
     )
@@ -144,6 +165,13 @@ object QuickerToolboxProtocol {
     fun systemCommand(command: QuickerSystemCommand): String = command(
         OP_SYSTEM_COMMAND,
         "command" to command.wireValue,
+    )
+
+    fun windowsListCommand(): String = command(OP_WINDOWS_LIST)
+
+    fun windowsActivateCommand(token: String): String = command(
+        OP_WINDOWS_ACTIVATE,
+        "token" to canonicalUuid(token, "窗口令牌无效"),
     )
 
     fun downloadPickCommand(): String = command(OP_DOWNLOAD_PICK)
@@ -224,6 +252,7 @@ object QuickerToolboxProtocol {
         return when (operation) {
             OP_CLIPBOARD_READ -> parseClipboard(root)
             OP_SCREEN_CAPTURE -> parseScreenCapture(root)
+            OP_WINDOWS_LIST -> parseWindows(root)
             OP_DOWNLOAD_PICK -> parseTransfer(root)
             OP_DOWNLOAD_CHUNK -> parseDownloadChunk(root)
             OP_DOWNLOAD_FINISH,
@@ -231,6 +260,7 @@ object QuickerToolboxProtocol {
             OP_SCREEN_CLICK,
             OP_CLIPBOARD_WRITE,
             OP_SYSTEM_COMMAND,
+            OP_WINDOWS_ACTIVATE,
             -> {
                 root.requireFields(commonSuccessFields, "工具箱完成响应格式无效")
                 QuickerToolboxResult.Completed
@@ -270,6 +300,40 @@ object QuickerToolboxProtocol {
                 "屏幕标识格式无效",
             ),
         )
+    }
+
+    private fun parseWindows(root: JsonObject): QuickerToolboxResult.Windows {
+        root.requireFields(commonSuccessFields + "windows", "窗口列表响应格式无效")
+        val windows = root.requiredArray("windows", "窗口列表格式无效")
+        require(windows.size() <= MAX_WINDOWS) { "窗口数量过多" }
+        val seenTokens = hashSetOf<String>()
+        var activeCount = 0
+        val items = windows.map { element ->
+            require(element.isJsonObject) { "窗口条目格式无效" }
+            val item = element.asJsonObject
+            item.requireFields(
+                setOf("token", "title", "processName", "icon", "active"),
+                "窗口条目字段无效",
+            )
+            val token = canonicalUuid(item.requiredString("token", "窗口令牌格式无效"), "窗口令牌格式无效")
+            require(seenTokens.add(token)) { "窗口列表包含重复令牌" }
+            val title = validateWindowText(
+                item.requiredString("title", "窗口标题格式无效"),
+                MAX_WINDOW_TITLE_LENGTH,
+                "窗口标题格式无效",
+            )
+            val processName = validateWindowText(
+                item.requiredString("processName", "窗口进程名格式无效"),
+                MAX_PROCESS_NAME_LENGTH,
+                "窗口进程名格式无效",
+            )
+            val icon = validateWindowIcon(item.requiredNullableString("icon", "窗口图标格式无效"))
+            val active = item.requiredBoolean("active", "窗口激活状态格式无效")
+            if (active) activeCount++
+            QuickerDesktopWindow(token, title, processName, icon, active)
+        }
+        require(activeCount <= 1) { "窗口列表包含多个活动窗口" }
+        return QuickerToolboxResult.Windows(items)
     }
 
     private fun parseTransferDescriptor(root: JsonObject): QuickerTransferDescriptor {
@@ -371,7 +435,7 @@ object QuickerToolboxProtocol {
             }
         }
         val command = COMMAND_PREFIX + root.toString()
-        require(command.length <= MAX_PAYLOAD_LENGTH) { "工具箱请求过大" }
+        require(command.length <= MAX_COMMAND_LENGTH) { "工具箱请求过大" }
         return command
     }
 
@@ -379,12 +443,12 @@ object QuickerToolboxProtocol {
         require(data != null && !data.isJsonNull) { "Quicker 未返回工具箱结果" }
         val decoded = if (data.isJsonPrimitive && data.asJsonPrimitive.isString) {
             val payload = data.asString
-            require(payload.length in 1..MAX_PAYLOAD_LENGTH) { "工具箱响应长度无效" }
+            require(payload.length in 1..MAX_RESPONSE_LENGTH) { "工具箱响应长度无效" }
             runCatching { StrictJsonParser.parse(payload) }
                 .getOrElse { throw IllegalArgumentException("工具箱响应不是有效 JSON") }
         } else {
             val payload = data.toString()
-            require(payload.length in 1..MAX_PAYLOAD_LENGTH) { "工具箱响应长度无效" }
+            require(payload.length in 1..MAX_RESPONSE_LENGTH) { "工具箱响应长度无效" }
             data
         }
         require(decoded.isJsonObject) { "工具箱响应不是 JSON 对象" }
@@ -408,6 +472,40 @@ object QuickerToolboxProtocol {
         require(value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }) {
             "SHA-256 格式无效"
         }
+        return value
+    }
+
+    private fun validateWindowText(value: String, maximum: Int, message: String): String {
+        require(value.isNotBlank() && value.length <= maximum && value.none(Char::isISOControl)) { message }
+        return value
+    }
+
+    private fun validateWindowIcon(value: String?): String? {
+        if (value == null) return null
+        require(value.startsWith(PNG_DATA_PREFIX) && value.length <= MAX_WINDOW_ICON_LENGTH) {
+            "窗口图标格式无效"
+        }
+        val encoded = value.removePrefix(PNG_DATA_PREFIX)
+        require(encoded.isNotEmpty() && encoded.length % 4 == 0 && encoded.none(Char::isWhitespace)) {
+            "窗口图标格式无效"
+        }
+        val bytes = runCatching { Base64.getDecoder().decode(encoded) }
+            .getOrElse { throw IllegalArgumentException("窗口图标格式无效") }
+        require(
+            bytes.size in MIN_PNG_BYTES..MAX_WINDOW_ICON_BYTES &&
+                bytes.startsWith(PNG_SIGNATURE) &&
+                Base64.getEncoder().encodeToString(bytes) == encoded,
+        ) { "窗口图标格式无效" }
+        require(bytes.readUInt32(8) == PNG_IHDR_DATA_LENGTH && bytes.matchesAt(PNG_IHDR, 12)) {
+            "窗口图标格式无效"
+        }
+        val width = bytes.readUInt32(16)
+        val height = bytes.readUInt32(20)
+        require(
+            width in 1..MAX_ICON_DIMENSION &&
+                height in 1..MAX_ICON_DIMENSION &&
+                width * height <= MAX_ICON_PIXELS,
+        ) { "窗口图标尺寸无效" }
         return value
     }
 
@@ -471,6 +569,19 @@ object QuickerToolboxProtocol {
         return element.asJsonObject
     }
 
+    private fun JsonObject.requiredArray(name: String, message: String): JsonArray {
+        val element = get(name)?.takeUnless(JsonElement::isJsonNull)
+        require(element != null && element.isJsonArray) { message }
+        return element.asJsonArray
+    }
+
+    private fun JsonObject.requiredNullableString(name: String, message: String): String? {
+        val element = get(name) ?: throw IllegalArgumentException(message)
+        if (element.isJsonNull) return null
+        require(element.isJsonPrimitive && element.asJsonPrimitive.isString) { message }
+        return element.asString
+    }
+
     private val supportedOperations = setOf(
         OP_CLIPBOARD_READ,
         OP_CLIPBOARD_WRITE,
@@ -484,8 +595,31 @@ object QuickerToolboxProtocol {
         OP_UPLOAD_FINISH,
         OP_TRANSFER_CANCEL,
         OP_SYSTEM_COMMAND,
+        OP_WINDOWS_LIST,
+        OP_WINDOWS_ACTIVATE,
     )
     private val integerPattern = Regex("0|-?[1-9][0-9]*")
+    private const val PNG_DATA_PREFIX = "data:image/png;base64,"
+    private const val MIN_PNG_BYTES = 33
+    private const val PNG_IHDR_DATA_LENGTH = 13L
+    private const val MAX_ICON_DIMENSION = 512L
+    private const val MAX_ICON_PIXELS = 262_144L
+    private val PNG_SIGNATURE = byteArrayOf(
+        0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    )
+    private val PNG_IHDR = byteArrayOf(0x49, 0x48, 0x44, 0x52)
+
+    private fun ByteArray.startsWith(prefix: ByteArray): Boolean =
+        size >= prefix.size && prefix.indices.all { index -> this[index] == prefix[index] }
+
+    private fun ByteArray.matchesAt(value: ByteArray, offset: Int): Boolean =
+        size >= offset + value.size && value.indices.all { index -> this[offset + index] == value[index] }
+
+    private fun ByteArray.readUInt32(offset: Int): Long =
+        ((this[offset].toLong() and 0xff) shl 24) or
+            ((this[offset + 1].toLong() and 0xff) shl 16) or
+            ((this[offset + 2].toLong() and 0xff) shl 8) or
+            (this[offset + 3].toLong() and 0xff)
 }
 
 enum class QuickerSystemCommand(val wireValue: String) {

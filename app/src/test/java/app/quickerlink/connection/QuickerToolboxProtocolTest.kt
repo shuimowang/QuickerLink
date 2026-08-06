@@ -12,13 +12,13 @@ import java.util.Base64
 
 class QuickerToolboxProtocolTest {
     @Test
-    fun `builds strict v8 commands and canonical chunk data`() {
+    fun `builds strict v9 commands and canonical chunk data`() {
         assertEquals(
-            "quickerlink:toolbox:v8:{\"op\":\"clipboard.read\"}",
+            "quickerlink:toolbox:v9:{\"op\":\"clipboard.read\"}",
             QuickerToolboxProtocol.clipboardReadCommand(),
         )
         assertEquals(
-            "quickerlink:toolbox:v8:{\"op\":\"clipboard.write\",\"text\":\"手机文本\"}",
+            "quickerlink:toolbox:v9:{\"op\":\"clipboard.write\",\"text\":\"手机文本\"}",
             QuickerToolboxProtocol.clipboardWriteCommand("手机文本"),
         )
 
@@ -54,6 +54,15 @@ class QuickerToolboxProtocolTest {
         assertEquals("system.command", system["op"].asString)
         assertEquals(setOf("op", "command"), system.keySet())
         assertEquals("restart-quicker", system["command"].asString)
+
+        assertEquals(
+            setOf("op"),
+            commandJson(QuickerToolboxProtocol.windowsListCommand()).keySet(),
+        )
+        val activate = commandJson(QuickerToolboxProtocol.windowsActivateCommand(TRANSFER_ID))
+        assertEquals("windows.activate", activate["op"].asString)
+        assertEquals(TRANSFER_ID, activate["token"].asString)
+        assertEquals(setOf("op", "token"), activate.keySet())
     }
 
     @Test
@@ -92,6 +101,30 @@ class QuickerToolboxProtocolTest {
         assertEquals(5L, transfer.descriptor.size)
         assertEquals(QuickerToolboxProtocol.CHUNK_BYTES, transfer.descriptor.chunkSize)
         assertEquals(TRANSFER_ID, transfer.captureId)
+    }
+
+    @Test
+    fun `parses strict bounded desktop window list`() {
+        val payload = success(
+            "windows.list",
+            """, "windows":[
+                {"token":"$TRANSFER_ID","title":"项目文档","processName":"notepad.exe","icon":"data:image/png;base64,$ONE_PIXEL_PNG","active":true},
+                {"token":"$SECOND_TOKEN","title":"浏览器","processName":"msedge.exe","icon":null,"active":false}
+            ]""",
+        )
+
+        val result = QuickerToolboxProtocol.parse(
+            JsonPrimitive(payload),
+            QuickerToolboxProtocol.OP_WINDOWS_LIST,
+        ) as QuickerToolboxResult.Windows
+
+        assertEquals(2, result.items.size)
+        assertEquals("项目文档", result.items.first().title)
+        assertEquals("notepad.exe", result.items.first().processName)
+        assertTrue(result.items.first().active)
+        assertEquals("data:image/png;base64,$ONE_PIXEL_PNG", result.items.first().icon)
+        assertFalse(result.items.last().active)
+        assertEquals(null, result.items.last().icon)
     }
 
     @Test
@@ -192,6 +225,13 @@ class QuickerToolboxProtocolTest {
                 QuickerToolboxProtocol.OP_SYSTEM_COMMAND,
             ),
         )
+        assertEquals(
+            QuickerToolboxResult.Completed,
+            QuickerToolboxProtocol.parse(
+                JsonPrimitive(success("windows.activate")),
+                QuickerToolboxProtocol.OP_WINDOWS_ACTIVATE,
+            ),
+        )
     }
 
     @Test
@@ -242,10 +282,15 @@ class QuickerToolboxProtocolTest {
             "screen_click_failed" to "电脑未能完成屏幕点击",
             "clipboard_write_failed" to "无法写入电脑剪贴板",
             "system_command_failed" to "电脑未能执行系统命令",
+            "window_list_failed" to "无法读取电脑窗口列表",
+            "window_token_expired" to "窗口列表已失效，请刷新后重试",
+            "window_activate_failed" to "电脑未能切换到该窗口",
         ).forEach { (code, message) ->
             val operation = when {
                 code.startsWith("screen_") -> "screen.click"
                 code.startsWith("clipboard_") -> "clipboard.write"
+                code == "window_list_failed" -> "windows.list"
+                code.startsWith("window_") -> "windows.activate"
                 else -> "system.command"
             }
             val remote = assertThrows(QuickerToolboxRemoteException::class.java) {
@@ -254,6 +299,8 @@ class QuickerToolboxProtocolTest {
                     when (operation) {
                         "screen.click" -> QuickerToolboxProtocol.OP_SCREEN_CLICK
                         "clipboard.write" -> QuickerToolboxProtocol.OP_CLIPBOARD_WRITE
+                        "windows.list" -> QuickerToolboxProtocol.OP_WINDOWS_LIST
+                        "windows.activate" -> QuickerToolboxProtocol.OP_WINDOWS_ACTIVATE
                         else -> QuickerToolboxProtocol.OP_SYSTEM_COMMAND
                     },
                 )
@@ -274,7 +321,7 @@ class QuickerToolboxProtocolTest {
     @Test
     fun `separates old versions from malformed protocols`() {
         listOf(
-            """{"protocol":"quickerlink.toolbox","version":6,"ok":true,"op":"clipboard.read","text":""}""",
+            """{"protocol":"quickerlink.toolbox","version":8,"ok":true,"op":"clipboard.read","text":""}""",
             """{"protocol":"quickerlink.panel-actions","version":5,"ok":false,"code":"unsupported_command","error":"不支持"}""",
         ).forEach { payload ->
             assertThrows(UnsupportedToolboxVersionException::class.java) {
@@ -284,7 +331,7 @@ class QuickerToolboxProtocolTest {
 
         listOf(
             """{"protocol":"unexpected","version":5,"ok":true,"op":"clipboard.read","text":""}""",
-            """{"protocol":"quickerlink.panel-actions","version":8,"ok":true,"op":"clipboard.read","text":""}""",
+            """{"protocol":"quickerlink.panel-actions","version":9,"ok":true,"op":"clipboard.read","text":""}""",
             """{"version":5,"ok":true,"op":"clipboard.read","text":""}""",
             """{"protocol":"quickerlink.toolbox","version":"5","ok":true,"op":"clipboard.read","text":""}""",
         ).forEach { payload ->
@@ -353,12 +400,53 @@ class QuickerToolboxProtocolTest {
             listOf("shutdown", "sleep", "restart-quicker"),
             QuickerSystemCommand.entries.map(QuickerSystemCommand::wireValue),
         )
+        assertThrows(IllegalArgumentException::class.java) {
+            QuickerToolboxProtocol.windowsActivateCommand("not-a-uuid")
+        }
+    }
+
+    @Test
+    fun `rejects unsafe malformed or oversized desktop window lists`() {
+        val validItem =
+            """{"token":"$TRANSFER_ID","title":"窗口","processName":"app.exe","icon":null,"active":false}"""
+        val duplicateToken = success("windows.list", """, "windows":[$validItem,$validItem]""")
+        val multipleActive = success(
+            "windows.list",
+            """, "windows":[
+                {"token":"$TRANSFER_ID","title":"窗口一","processName":"one.exe","icon":null,"active":true},
+                {"token":"$SECOND_TOKEN","title":"窗口二","processName":"two.exe","icon":null,"active":true}
+            ]""",
+        )
+        val extraField = success(
+            "windows.list",
+            """, "windows":[{"token":"$TRANSFER_ID","title":"窗口","processName":"app.exe","icon":null,"active":false,"hwnd":1}]""",
+        )
+        val invalidIcon = success(
+            "windows.list",
+            """, "windows":[{"token":"$TRANSFER_ID","title":"窗口","processName":"app.exe","icon":"data:image/png;base64,YWJj","active":false}]""",
+        )
+        val tooMany = (0 until 49).joinToString(",", prefix = "[", postfix = "]") { index ->
+            val token = "00000000-0000-4000-8000-${index.toString().padStart(12, '0')}"
+            """{"token":"$token","title":"窗口$index","processName":"app.exe","icon":null,"active":false}"""
+        }
+        listOf(
+            duplicateToken,
+            multipleActive,
+            extraField,
+            invalidIcon,
+            success("windows.list", """, "windows":$tooMany"""),
+            success("windows.list", """, "windows":[{"token":"$TRANSFER_ID","title":" ","processName":"app.exe","icon":null,"active":false}]"""),
+        ).forEach { payload ->
+            assertThrows(IllegalArgumentException::class.java) {
+                QuickerToolboxProtocol.parse(JsonPrimitive(payload), QuickerToolboxProtocol.OP_WINDOWS_LIST)
+            }
+        }
     }
 
     @Test
     fun `rejects duplicate response fields before parsing values`() {
         val payload =
-            """{"protocol":"quickerlink.toolbox","version":8,"ok":false,"ok":true,"op":"clipboard.read","text":"secret"}"""
+            """{"protocol":"quickerlink.toolbox","version":9,"ok":false,"ok":true,"op":"clipboard.read","text":"secret"}"""
         assertThrows(IllegalArgumentException::class.java) {
             QuickerToolboxProtocol.parse(JsonPrimitive(payload), QuickerToolboxProtocol.OP_CLIPBOARD_READ)
         }
@@ -400,16 +488,19 @@ class QuickerToolboxProtocolTest {
     }
 
     private fun commandJson(command: String) = JsonParser.parseString(
-        command.removePrefix("quickerlink:toolbox:v8:"),
+        command.removePrefix("quickerlink:toolbox:v9:"),
     ).asJsonObject
 
     private fun success(operation: String, extra: String = ""): String =
-        """{"protocol":"quickerlink.toolbox","version":8,"ok":true,"op":"$operation"$extra}"""
+        """{"protocol":"quickerlink.toolbox","version":9,"ok":true,"op":"$operation"$extra}"""
 
     private fun error(code: String, operation: String = "download.pick"): String =
-        """{"protocol":"quickerlink.toolbox","version":8,"ok":false,"op":"$operation","code":"$code"}"""
+        """{"protocol":"quickerlink.toolbox","version":9,"ok":false,"op":"$operation","code":"$code"}"""
 
     private companion object {
         const val TRANSFER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        const val SECOND_TOKEN = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        const val ONE_PIXEL_PNG =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     }
 }

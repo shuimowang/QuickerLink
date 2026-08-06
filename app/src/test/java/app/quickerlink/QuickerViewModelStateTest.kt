@@ -2,7 +2,9 @@ package app.quickerlink
 
 import app.quickerlink.connection.QuickerPanelScene
 import app.quickerlink.connection.QuickerConnectionConfig
+import app.quickerlink.connection.QuickerConnectionBinding
 import app.quickerlink.connection.QuickerConnectionState
+import app.quickerlink.connection.QuickerDesktopWindow
 import app.quickerlink.connection.QuickerMessage
 import app.quickerlink.connection.QuickerLinkCapabilities
 import app.quickerlink.connection.QuickerPanelAction
@@ -20,6 +22,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
@@ -37,6 +40,161 @@ class QuickerViewModelStateTest {
         password = config.password,
         requiresPassword = true,
     )
+
+    @Test
+    fun screenTapQueueCoalescesToLatestAndClearsOnMonitorClose() {
+        val queue = LatestScreenTapQueue()
+        val first = QueuedScreenTap(FIRST_CAPTURE_ID, 100, 200, firstToolboxConnection, monitorSession = 1L)
+        val latest = QueuedScreenTap(SECOND_CAPTURE_ID, 300, 400, secondToolboxConnection, monitorSession = 2L)
+        queue.offer(first)
+        queue.offer(latest)
+
+        assertTrue(queue.hasPending)
+        val taken = requireNotNull(queue.take())
+        assertEquals(SECOND_CAPTURE_ID, taken.captureId)
+        assertEquals(300, taken.x)
+        assertEquals(400, taken.y)
+        assertEquals(2L, taken.monitorSession)
+        assertSame(secondToolboxConnection, taken.connection)
+        assertFalse(queue.hasPending)
+        assertNull(queue.take())
+
+        queue.offer(first.copy(x = 500, y = 600))
+        queue.clear()
+        assertNull(queue.take())
+    }
+
+    @Test
+    fun screenTapQueueRejectsCoordinatesOutsideProtocolRange() {
+        val queue = LatestScreenTapQueue()
+        assertThrows(IllegalArgumentException::class.java) {
+            queue.offer(QueuedScreenTap(FIRST_CAPTURE_ID, -1, 0, firstToolboxConnection, monitorSession = 1L))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            queue.offer(
+                QueuedScreenTap(FIRST_CAPTURE_ID, 0, 1_000_001, firstToolboxConnection, monitorSession = 1L),
+            )
+        }
+    }
+
+    @Test
+    fun windowActivationQueueCoalescesToLatestBindingAndClears() {
+        val queue = LatestWindowActivationQueue()
+        queue.offer(QueuedWindowActivation(FIRST_WINDOW_TOKEN, "第一个窗口", firstToolboxConnection, 1L))
+        queue.offer(QueuedWindowActivation(SECOND_WINDOW_TOKEN, "第二个窗口", secondToolboxConnection, 2L))
+
+        assertTrue(queue.hasPending)
+        val taken = requireNotNull(queue.take())
+        assertEquals(SECOND_WINDOW_TOKEN, taken.token)
+        assertEquals("第二个窗口", taken.title)
+        assertSame(secondToolboxConnection, taken.connection)
+        assertEquals(2L, taken.monitorSession)
+        assertFalse(queue.hasPending)
+
+        queue.offer(QueuedWindowActivation(FIRST_WINDOW_TOKEN, "第一个窗口", firstToolboxConnection, 1L))
+        queue.clear()
+        assertNull(queue.take())
+    }
+
+    @Test
+    fun monitorFollowUpsRequireVisibleMonitorAndReadyConnection() {
+        val ready = QuickerConnectionState.Ready("wss://192.168.1.56:668/QuickWebSocket")
+
+        assertTrue(shouldDispatchMonitorFollowUp(monitorActive = true, connectionState = ready))
+        assertFalse(shouldDispatchMonitorFollowUp(monitorActive = false, connectionState = ready))
+        assertFalse(
+            shouldDispatchMonitorFollowUp(
+                monitorActive = true,
+                connectionState = QuickerConnectionState.Reconnecting(1, 2, "网络切换"),
+            ),
+        )
+    }
+
+    @Test
+    fun pendingMonitorCaptureCoalescesBusyRequestsAndIsClearedByClose() {
+        val pending = PendingMonitorCapture()
+
+        pending.request(1L)
+        pending.request(1L)
+        assertTrue(pending.isPending)
+        assertTrue(pending.take(1L))
+        assertFalse(pending.take(1L))
+
+        pending.request(2L)
+        pending.clear(1L)
+        assertTrue(pending.isPending)
+        assertTrue(pending.take(2L))
+
+        pending.request(3L)
+        pending.clear()
+        assertFalse(pending.isPending)
+    }
+
+    @Test
+    fun screenPreviewRequiresCurrentConnectionAndMonitorSession() {
+        val ready = QuickerConnectionState.Ready("wss://192.168.1.56:668/QuickWebSocket")
+
+        assertTrue(
+            shouldPublishMonitorResult(
+                connectionCurrent = true,
+                connectionState = ready,
+                requestedMonitorSession = 3L,
+                activeMonitorSession = 3L,
+                monitorActive = true,
+            ),
+        )
+        assertFalse(
+            shouldPublishMonitorResult(
+                connectionCurrent = true,
+                connectionState = ready,
+                requestedMonitorSession = 2L,
+                activeMonitorSession = 3L,
+                monitorActive = true,
+            ),
+        )
+        assertFalse(
+            shouldPublishMonitorResult(
+                connectionCurrent = false,
+                connectionState = ready,
+                requestedMonitorSession = 3L,
+                activeMonitorSession = 3L,
+                monitorActive = true,
+            ),
+        )
+        assertTrue(
+            shouldPublishMonitorResult(
+                connectionCurrent = true,
+                connectionState = ready,
+                requestedMonitorSession = null,
+                activeMonitorSession = null,
+                monitorActive = false,
+            ),
+        )
+    }
+
+    @Test
+    fun closingMonitorInvalidatesPreviewAndWindowInteractions() {
+        val state = QuickerUiState(
+            screenPreview = ScreenPreviewState(
+                path = "screen.jpg",
+                name = "screen.jpg",
+                capturedAt = "12:00:00",
+                captureId = FIRST_CAPTURE_ID,
+            ),
+            desktopWindows = listOf(
+                QuickerDesktopWindow(FIRST_WINDOW_TOKEN, "窗口", "process", icon = null, active = true),
+            ),
+            desktopWindowsLoaded = true,
+            windowActivationQueued = true,
+        )
+
+        val closed = invalidateScreenMonitorSession(state)
+
+        assertNull(closed.screenPreview?.captureId)
+        assertTrue(closed.desktopWindows.isEmpty())
+        assertFalse(closed.desktopWindowsLoaded)
+        assertFalse(closed.windowActivationQueued)
+    }
 
     @Test
     fun userConnectionsAllowAnEmptyVerificationCodeButRejectUnsafeValues() {
@@ -492,9 +650,22 @@ class QuickerViewModelStateTest {
     )
 
     private companion object {
+        const val FIRST_CAPTURE_ID = "44444444-4444-4444-8444-444444444444"
+        const val SECOND_CAPTURE_ID = "55555555-5555-4555-8555-555555555555"
+        const val FIRST_WINDOW_TOKEN = "66666666-6666-4666-8666-666666666666"
+        const val SECOND_WINDOW_TOKEN = "77777777-7777-4777-8777-777777777777"
         const val FIRST_ACTION_ID = "11111111-1111-4111-8111-111111111111"
         const val SECOND_ACTION_ID = "22222222-2222-4222-8222-222222222222"
         const val THIRD_ACTION_ID = "33333333-3333-4333-8333-333333333333"
         const val ICON_URL = "https://files.getquicker.net/_icons/NEW.png"
     }
+
+    private val firstToolboxConnection = ToolboxConnection(
+        connection = QuickerConnectionBinding(config, generation = 1L),
+        actionId = FIRST_ACTION_ID,
+    )
+    private val secondToolboxConnection = ToolboxConnection(
+        connection = QuickerConnectionBinding(config.copy(ipAddress = "192.168.1.57"), generation = 2L),
+        actionId = SECOND_ACTION_ID,
+    )
 }

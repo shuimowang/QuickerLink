@@ -2,12 +2,14 @@ package app.quickerlink
 
 import android.app.Application
 import android.net.Uri
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.quickerlink.connection.QuickerConnectionConfig
 import app.quickerlink.connection.QuickerConnectionBinding
 import app.quickerlink.connection.QuickerConnectionRuntimeEvent
 import app.quickerlink.connection.QuickerConnectionState
+import app.quickerlink.connection.QuickerDesktopWindow
 import app.quickerlink.connection.QuickerActionControlProtocol
 import app.quickerlink.connection.AndroidIpv4SubnetProvider
 import app.quickerlink.connection.QuickerEndpoint
@@ -96,6 +98,7 @@ enum class ToolboxTask {
     SEND_FILE,
     SAVE_SCREEN,
     SYSTEM_CONTROL,
+    WINDOWS,
 }
 
 sealed interface ToolboxStatus {
@@ -130,7 +133,7 @@ private data class PendingUploadConfirmation(
     val actionId: String,
 )
 
-private data class ToolboxConnection(
+internal data class ToolboxConnection(
     val connection: QuickerConnectionBinding,
     val actionId: String,
 )
@@ -142,6 +145,79 @@ data class ScreenPreviewState(
     val captureId: String?,
     val savedLocation: String? = null,
 )
+
+internal data class QueuedScreenTap(
+    val captureId: String,
+    val x: Int,
+    val y: Int,
+    val connection: ToolboxConnection,
+    val monitorSession: Long,
+)
+
+internal class LatestScreenTapQueue {
+    private var pending: QueuedScreenTap? = null
+    val hasPending: Boolean
+        get() = pending != null
+
+    fun offer(tap: QueuedScreenTap) {
+        QuickerToolboxProtocol.screenClickCommand(tap.captureId, tap.x, tap.y)
+        pending = tap
+    }
+
+    fun take(): QueuedScreenTap? = pending.also { pending = null }
+
+    fun clear() {
+        pending = null
+    }
+}
+
+internal data class QueuedWindowActivation(
+    val token: String,
+    val title: String,
+    val connection: ToolboxConnection,
+    val monitorSession: Long,
+)
+
+internal class LatestWindowActivationQueue {
+    private var pending: QueuedWindowActivation? = null
+    val hasPending: Boolean
+        get() = pending != null
+
+    fun offer(activation: QueuedWindowActivation) {
+        QuickerToolboxProtocol.windowsActivateCommand(activation.token)
+        pending = activation
+    }
+
+    fun take(): QueuedWindowActivation? = pending.also { pending = null }
+
+    fun clear() {
+        pending = null
+    }
+}
+
+internal class PendingMonitorCapture {
+    private var monitorSession: Long? = null
+    val isPending: Boolean
+        get() = monitorSession != null
+
+    fun request(session: Long) {
+        monitorSession = session
+    }
+
+    fun take(session: Long): Boolean {
+        if (monitorSession != session) return false
+        monitorSession = null
+        return true
+    }
+
+    fun clear(session: Long?) {
+        if (monitorSession == session) monitorSession = null
+    }
+
+    fun clear() {
+        monitorSession = null
+    }
+}
 
 data class IncomingFileOfferState(
     val descriptor: QuickerTransferDescriptor,
@@ -170,6 +246,10 @@ data class QuickerUiState(
     val toolboxText: String = "",
     val toolboxStatus: ToolboxStatus = ToolboxStatus.Idle,
     val screenPreview: ScreenPreviewState? = null,
+    val desktopWindows: List<QuickerDesktopWindow> = emptyList(),
+    val desktopWindowsLoaded: Boolean = false,
+    val desktopWindowsError: String? = null,
+    val windowActivationQueued: Boolean = false,
     val incomingFileOffer: IncomingFileOfferState? = null,
     val logs: List<EventLog> = emptyList(),
     val appVersionName: String = BuildConfig.VERSION_NAME,
@@ -431,6 +511,32 @@ internal fun shouldSyncPanelActionsAfterReady(
     capabilities: QuickerLinkCapabilities?,
 ): Boolean = explicitlyRequested || capabilities == null
 
+internal fun shouldDispatchMonitorFollowUp(
+    monitorActive: Boolean,
+    connectionState: QuickerConnectionState,
+): Boolean = monitorActive && connectionState is QuickerConnectionState.Ready
+
+internal fun shouldPublishMonitorResult(
+    connectionCurrent: Boolean,
+    connectionState: QuickerConnectionState,
+    requestedMonitorSession: Long?,
+    activeMonitorSession: Long?,
+    monitorActive: Boolean,
+): Boolean = connectionCurrent &&
+    connectionState is QuickerConnectionState.Ready &&
+    (
+        requestedMonitorSession == null ||
+            monitorActive && requestedMonitorSession == activeMonitorSession
+        )
+
+internal fun invalidateScreenMonitorSession(state: QuickerUiState): QuickerUiState = state.copy(
+    screenPreview = state.screenPreview?.copy(captureId = null),
+    desktopWindows = emptyList(),
+    desktopWindowsLoaded = false,
+    desktopWindowsError = null,
+    windowActivationQueued = false,
+)
+
 class QuickerViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences: QuickerPreferences = AppPreferences(application)
     private val connectionRuntime = (application as QuickerLinkApplication).connectionRuntime
@@ -458,6 +564,14 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     private var suppressRemoteTransferCancel = false
     private var pendingUploadConfirmation: PendingUploadConfirmation? = null
     private var screenConnection: ToolboxConnection? = null
+    private var screenMonitorActive = false
+    private var screenMonitorSessionSerial = 0L
+    private var activeScreenMonitorSession: Long? = null
+    private val pendingMonitorCapture = PendingMonitorCapture()
+    private val pendingScreenTaps = LatestScreenTapQueue()
+    private val pendingWindowActivations = LatestWindowActivationQueue()
+    private var desktopWindowsConnection: ToolboxConnection? = null
+    private var desktopWindowsRefreshedAtMillis = 0L
     private var toolboxCancellationRequested = false
     private val mutableUiState = MutableStateFlow(
         QuickerUiState(
@@ -1078,18 +1192,65 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun captureComputerScreen() {
+        captureComputerScreen(silentIfBusy = false)
+    }
+
+    fun openComputerScreenMonitor() {
+        screenMonitorActive = true
+        screenMonitorSessionSerial += 1L
+        activeScreenMonitorSession = screenMonitorSessionSerial
+        if (toolboxJob?.isActive == true) {
+            pendingMonitorCapture.request(screenMonitorSessionSerial)
+        } else {
+            captureComputerScreen(silentIfBusy = true)
+        }
+    }
+
+    fun closeComputerScreenMonitor() {
+        screenMonitorActive = false
+        activeScreenMonitorSession = null
+        screenConnection = null
+        desktopWindowsConnection = null
+        desktopWindowsRefreshedAtMillis = 0L
+        pendingMonitorCapture.clear()
+        pendingScreenTaps.clear()
+        pendingWindowActivations.clear()
+        mutableUiState.update(::invalidateScreenMonitorSession)
+    }
+
+    fun captureComputerScreenInMonitor() {
+        if (!screenMonitorActive) return
+        if (toolboxJob?.isActive == true) {
+            pendingMonitorCapture.request(requireNotNull(activeScreenMonitorSession))
+        } else {
+            captureComputerScreen(silentIfBusy = true)
+        }
+    }
+
+    private fun captureComputerScreen(silentIfBusy: Boolean) {
+        val monitorSession = activeScreenMonitorSession
         launchToolboxTask(
             task = ToolboxTask.SCREEN,
             title = "获取当前屏幕",
             detail = "正在请求电脑生成快照",
+            silentIfBusy = silentIfBusy,
         ) {
             val connection = currentToolboxConnection()
-            requestAndDownloadScreen("获取电脑当前屏幕：Quicker Link", connection)
+            requestAndDownloadScreen(
+                logSummary = "获取电脑当前屏幕：Quicker Link",
+                connection = connection,
+                task = ToolboxTask.SCREEN,
+                monitorSession = monitorSession,
+            )
+            if (canDispatchMonitorFollowUp(connection, monitorSession) && !hasPendingMonitorInteraction()) {
+                refreshDesktopWindowsIfStale(connection, monitorSession)
+            }
         }
     }
 
     fun clickComputerScreen(captureId: String, x: Int, y: Int) {
         val state = mutableUiState.value
+        if (!screenMonitorActive) return
         if (state.linkCapabilities?.screenClick != true) {
             mutableNotices.tryEmit(UiNotice.Error("请先同步最新版 Quicker Link 动作能力"))
             return
@@ -1103,30 +1264,348 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             mutableNotices.tryEmit(UiNotice.Error("屏幕画面已失效，请刷新后重试"))
             return
         }
+        if (!connectionManager.isCurrentReadyConnection(connection.connection)) {
+            mutableUiState.update { current ->
+                current.copy(screenPreview = current.screenPreview?.copy(captureId = null))
+            }
+            screenConnection = null
+            mutableNotices.tryEmit(UiNotice.Error("屏幕画面已失效，请刷新后重试"))
+            return
+        }
+        val monitorSession = activeScreenMonitorSession
+        if (monitorSession == null) return
+        val tap = QueuedScreenTap(captureId, x, y, connection, monitorSession)
+        if (toolboxJob?.isActive == true) {
+            val workingTask = (state.toolboxStatus as? ToolboxStatus.Working)?.task
+            when {
+                pendingWindowActivations.hasPending -> Unit
+                workingTask == ToolboxTask.SCREEN -> pendingScreenTaps.offer(tap)
+                workingTask == ToolboxTask.SCREEN_CLICK -> {
+                    mutableNotices.tryEmit(UiNotice.Error("正在处理上一次点击，请等待画面刷新"))
+                }
+                else -> mutableNotices.tryEmit(UiNotice.Error("已有传输任务正在进行"))
+            }
+            return
+        }
+        dispatchComputerScreenClick(tap, queued = false)
+    }
+
+    private fun dispatchComputerScreenClick(
+        tap: QueuedScreenTap,
+        queued: Boolean,
+    ) {
+        val connection = tap.connection
+        screenConnection = null
+        mutableUiState.update { current ->
+            current.copy(screenPreview = current.screenPreview?.copy(captureId = null))
+        }
         launchToolboxTask(
             task = ToolboxTask.SCREEN_CLICK,
             title = "点击电脑屏幕",
             detail = "正在发送点击并刷新画面",
+            silentIfBusy = true,
         ) {
-            mutableUiState.update { current ->
-                current.copy(
-                    screenPreview = current.screenPreview
-                        ?.takeIf { it.captureId == captureId }
-                        ?.copy(captureId = null)
-                        ?: current.screenPreview,
+            try {
+                requestToolbox(
+                    command = QuickerToolboxProtocol.screenClickCommand(tap.captureId, tap.x, tap.y),
+                    expectedOperation = QuickerToolboxProtocol.OP_SCREEN_CLICK,
+                    logSummary = "点击电脑屏幕：Quicker Link",
+                    actionId = connection.actionId,
+                    expectedConnection = connection.connection,
+                )
+            } catch (error: QuickerToolboxRemoteException) {
+                if (queued && error.code == "screen_target_expired") {
+                    if (
+                        canDispatchMonitorFollowUp(connection, tap.monitorSession) &&
+                        !pendingWindowActivations.hasPending
+                    ) {
+                        mutableNotices.emit(UiNotice.Error("画面已更新，请重新点击"))
+                        requestAndDownloadScreen(
+                            logSummary = "点击画面失效后刷新屏幕：Quicker Link",
+                            connection = connection,
+                            task = ToolboxTask.SCREEN_CLICK,
+                            monitorSession = tap.monitorSession,
+                        )
+                    } else if (!pendingWindowActivations.hasPending) {
+                        mutableUiState.update { it.copy(toolboxStatus = ToolboxStatus.Idle) }
+                    }
+                    return@launchToolboxTask
+                }
+                throw error
+            }
+            appendLog(QuickerEventDirection.INCOMING, "电脑已接收屏幕点击")
+            try {
+                delay(SCREEN_CLICK_SETTLE_MS)
+                if (
+                    !canDispatchMonitorFollowUp(connection, tap.monitorSession) ||
+                    pendingWindowActivations.hasPending
+                ) {
+                    if (!pendingWindowActivations.hasPending) {
+                        completeConfirmedMonitorInteraction(
+                            task = ToolboxTask.SCREEN_CLICK,
+                            title = "已点击电脑屏幕",
+                            detail = "电脑已接收点击",
+                        )
+                    }
+                    return@launchToolboxTask
+                }
+                requestAndDownloadScreen(
+                    logSummary = "点击后刷新电脑屏幕：Quicker Link",
+                    connection = connection,
+                    task = ToolboxTask.SCREEN_CLICK,
+                    monitorSession = tap.monitorSession,
+                )
+                if (
+                    canDispatchMonitorFollowUp(connection, tap.monitorSession) &&
+                    !hasPendingMonitorInteraction()
+                ) {
+                    refreshDesktopWindowsIfStale(connection, tap.monitorSession)
+                }
+            } catch (error: Exception) {
+                handleConfirmedMonitorFollowUpFailure(
+                    task = ToolboxTask.SCREEN_CLICK,
+                    title = "已点击电脑屏幕",
+                    detail = "画面暂未更新，可稍后刷新",
+                    notice = "已点击电脑屏幕，但画面暂未更新",
+                    error = error,
                 )
             }
+        }
+    }
+
+    private fun dispatchPendingScreenTapIfPossible() {
+        if (!screenMonitorActive) {
+            pendingScreenTaps.clear()
+            return
+        }
+        val tap = pendingScreenTaps.take() ?: return
+        val state = mutableUiState.value
+        if (
+            state.connectionState !is QuickerConnectionState.Ready ||
+            state.linkCapabilities?.screenClick != true ||
+            activeScreenMonitorSession != tap.monitorSession ||
+            !connectionManager.isCurrentReadyConnection(tap.connection.connection)
+        ) {
+            activeScreenMonitorSession?.let(pendingMonitorCapture::request)
+            return
+        }
+        dispatchComputerScreenClick(tap, queued = true)
+    }
+
+    private fun dispatchPendingMonitorCaptureIfPossible() {
+        if (!pendingMonitorCapture.isPending) return
+        if (!screenMonitorActive || activeScreenMonitorSession == null) {
+            pendingMonitorCapture.clear()
+            return
+        }
+        if (
+            toolboxJob?.isActive == true ||
+            mutableUiState.value.connectionState !is QuickerConnectionState.Ready
+        ) {
+            return
+        }
+        val monitorSession = requireNotNull(activeScreenMonitorSession)
+        if (pendingMonitorCapture.take(monitorSession)) {
+            captureComputerScreen(silentIfBusy = true)
+        }
+    }
+
+    private fun hasPendingMonitorInteraction(): Boolean =
+        pendingWindowActivations.hasPending || pendingScreenTaps.hasPending
+
+    private fun canDispatchMonitorFollowUp(
+        connection: ToolboxConnection,
+        monitorSession: Long?,
+    ): Boolean =
+        shouldDispatchMonitorFollowUp(
+            monitorActive = screenMonitorActive,
+            connectionState = mutableUiState.value.connectionState,
+        ) &&
+            monitorSession != null &&
+            monitorSession == activeScreenMonitorSession &&
+            connectionManager.isCurrentReadyConnection(connection.connection)
+
+    private fun completeConfirmedMonitorInteraction(
+        task: ToolboxTask,
+        title: String,
+        detail: String,
+    ) {
+        mutableUiState.update {
+            it.copy(toolboxStatus = ToolboxStatus.Success(task, title, detail))
+        }
+    }
+
+    private suspend fun handleConfirmedMonitorFollowUpFailure(
+        task: ToolboxTask,
+        title: String,
+        detail: String,
+        notice: String,
+        error: Exception,
+    ) {
+        if (error is CancellationException && !currentCoroutineContext().isActive) throw error
+        completeConfirmedMonitorInteraction(task, title, detail)
+        appendLog(
+            QuickerEventDirection.SYSTEM,
+            "$title，后续刷新失败：${compactLogText(boundedUiErrorMessage(error.message, "刷新失败"))}",
+        )
+        mutableNotices.emit(UiNotice.Success(notice))
+    }
+
+    fun refreshComputerWindows() {
+        if (mutableUiState.value.linkCapabilities?.windowList != true) {
+            mutableNotices.tryEmit(UiNotice.Error("请先同步最新版 Quicker Link 动作能力"))
+            return
+        }
+        val monitorSession = activeScreenMonitorSession
+        launchToolboxTask(
+            task = ToolboxTask.WINDOWS,
+            title = "刷新电脑窗口",
+            detail = "正在读取可切换窗口",
+        ) {
+            val connection = currentToolboxConnection()
+            val windows = requestDesktopWindows(connection, "读取电脑窗口：Quicker Link")
+            publishDesktopWindows(windows, "已刷新电脑窗口", connection, monitorSession)
+        }
+    }
+
+    fun activateComputerWindow(token: String) {
+        val state = mutableUiState.value
+        if (!screenMonitorActive) return
+        if (state.linkCapabilities?.windowActivate != true) {
+            mutableNotices.tryEmit(UiNotice.Error("请先同步最新版 Quicker Link 动作能力"))
+            return
+        }
+        val window = state.desktopWindows.singleOrNull { it.token == token }
+        if (window == null) {
+            mutableNotices.tryEmit(UiNotice.Error("窗口列表已失效，请刷新后重试"))
+            return
+        }
+        val connection = desktopWindowsConnection
+        if (connection == null) {
+            mutableNotices.tryEmit(UiNotice.Error("窗口列表已失效，请刷新后重试"))
+            return
+        }
+        if (!connectionManager.isCurrentReadyConnection(connection.connection)) {
+            desktopWindowsConnection = null
+            mutableNotices.tryEmit(UiNotice.Error("窗口列表已失效，请刷新后重试"))
+            return
+        }
+        val monitorSession = activeScreenMonitorSession ?: return
+        val activation = QueuedWindowActivation(token, window.title, connection, monitorSession)
+        if (toolboxJob?.isActive == true) {
+            val workingTask = (state.toolboxStatus as? ToolboxStatus.Working)?.task
+            if (workingTask == ToolboxTask.SCREEN || workingTask == ToolboxTask.SCREEN_CLICK) {
+                pendingScreenTaps.clear()
+                pendingWindowActivations.offer(activation)
+                mutableUiState.update { it.copy(windowActivationQueued = true) }
+            } else {
+                mutableNotices.tryEmit(UiNotice.Error("已有传输任务正在进行"))
+            }
+            return
+        }
+        pendingScreenTaps.clear()
+        dispatchComputerWindowActivation(activation)
+    }
+
+    private fun dispatchComputerWindowActivation(activation: QueuedWindowActivation) {
+        val connection = activation.connection
+        screenConnection = null
+        mutableUiState.update { current ->
+            current.copy(screenPreview = current.screenPreview?.copy(captureId = null))
+        }
+        launchToolboxTask(
+            task = ToolboxTask.WINDOWS,
+            title = "切换电脑窗口",
+            detail = activation.title,
+            silentIfBusy = true,
+        ) {
             requestToolbox(
-                command = QuickerToolboxProtocol.screenClickCommand(captureId, x, y),
-                expectedOperation = QuickerToolboxProtocol.OP_SCREEN_CLICK,
-                logSummary = "点击电脑屏幕：Quicker Link",
+                command = QuickerToolboxProtocol.windowsActivateCommand(activation.token),
+                expectedOperation = QuickerToolboxProtocol.OP_WINDOWS_ACTIVATE,
+                logSummary = "切换电脑窗口：${activation.title}",
                 actionId = connection.actionId,
                 expectedConnection = connection.connection,
             )
-            appendLog(QuickerEventDirection.INCOMING, "电脑已接收屏幕点击")
-            delay(200)
-            requestAndDownloadScreen("点击后刷新电脑屏幕：Quicker Link", connection)
+            mutableUiState.update { current ->
+                current.copy(
+                    desktopWindows = current.desktopWindows.map { item ->
+                        item.copy(active = item.token == activation.token)
+                    },
+                    desktopWindowsError = null,
+                )
+            }
+            appendLog(QuickerEventDirection.INCOMING, "已切换电脑窗口：${activation.title}")
+            try {
+                delay(WINDOW_ACTIVATION_SETTLE_MS)
+                if (!canDispatchMonitorFollowUp(connection, activation.monitorSession)) {
+                    completeConfirmedMonitorInteraction(
+                        task = ToolboxTask.WINDOWS,
+                        title = "已切换到 ${activation.title}",
+                        detail = "电脑窗口已切换",
+                    )
+                    return@launchToolboxTask
+                }
+                requestAndDownloadScreen(
+                    logSummary = "切换窗口后刷新屏幕：Quicker Link",
+                    connection = connection,
+                    task = ToolboxTask.WINDOWS,
+                    monitorSession = activation.monitorSession,
+                )
+                if (!canDispatchMonitorFollowUp(connection, activation.monitorSession)) {
+                    completeConfirmedMonitorInteraction(
+                        task = ToolboxTask.WINDOWS,
+                        title = "已切换到 ${activation.title}",
+                        detail = "电脑窗口和画面已更新",
+                    )
+                    return@launchToolboxTask
+                }
+                mutableUiState.update {
+                    it.copy(
+                        toolboxStatus = ToolboxStatus.Working(
+                            ToolboxTask.WINDOWS,
+                            "刷新电脑窗口",
+                            "正在确认当前窗口",
+                        ),
+                    )
+                }
+                val windows = requestDesktopWindows(connection, "刷新电脑窗口：Quicker Link")
+                publishDesktopWindows(
+                    windows = windows,
+                    successTitle = "已切换到 ${activation.title}",
+                    connection = connection,
+                    monitorSession = activation.monitorSession,
+                )
+            } catch (error: Exception) {
+                handleConfirmedMonitorFollowUpFailure(
+                    task = ToolboxTask.WINDOWS,
+                    title = "已切换到 ${activation.title}",
+                    detail = "画面或窗口列表暂未更新，可稍后刷新",
+                    notice = "已切换到 ${activation.title}，但画面暂未更新",
+                    error = error,
+                )
+            }
         }
+    }
+
+    private fun dispatchPendingWindowActivationIfPossible(): Boolean {
+        if (!screenMonitorActive) {
+            pendingWindowActivations.clear()
+            mutableUiState.update { it.copy(windowActivationQueued = false) }
+            return false
+        }
+        val activation = pendingWindowActivations.take() ?: return false
+        mutableUiState.update { it.copy(windowActivationQueued = false) }
+        val state = mutableUiState.value
+        if (
+            state.connectionState !is QuickerConnectionState.Ready ||
+            state.linkCapabilities?.windowActivate != true ||
+            activeScreenMonitorSession != activation.monitorSession ||
+            !connectionManager.isCurrentReadyConnection(activation.connection.connection)
+        ) {
+            return false
+        }
+        dispatchComputerWindowActivation(activation)
+        return true
     }
 
     fun receiveFileFromComputer() {
@@ -1508,6 +1987,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         detail: String,
         canCancel: Boolean = false,
         requiresConnection: Boolean = true,
+        silentIfBusy: Boolean = false,
         block: suspend () -> Unit,
     ) {
         if (requiresConnection && mutableUiState.value.connectionState !is QuickerConnectionState.Ready) {
@@ -1515,7 +1995,9 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         if (toolboxJob?.isActive == true) {
-            mutableNotices.tryEmit(UiNotice.Error("已有传输任务正在进行"))
+            if (!silentIfBusy) {
+                mutableNotices.tryEmit(UiNotice.Error("已有传输任务正在进行"))
+            }
             return
         }
 
@@ -1552,6 +2034,10 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 suppressRemoteTransferCancel = false
                 toolboxCancellationRequested = false
                 toolboxJob = null
+                if (!dispatchPendingWindowActivationIfPossible()) {
+                    dispatchPendingScreenTapIfPossible()
+                }
+                dispatchPendingMonitorCaptureIfPossible()
             }
         }
         toolboxJob = job
@@ -1584,8 +2070,13 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         if (requiresActionUpdate) {
             mutableUiState.update { it.copy(companionActionPromptVisible = true) }
         }
+        if (task == ToolboxTask.WINDOWS) {
+            desktopWindowsRefreshedAtMillis = 0L
+        }
         mutableUiState.update {
             it.copy(
+                desktopWindowsLoaded = if (task == ToolboxTask.WINDOWS) true else it.desktopWindowsLoaded,
+                desktopWindowsError = if (task == ToolboxTask.WINDOWS) message else it.desktopWindowsError,
                 toolboxStatus = ToolboxStatus.Failed(
                     task,
                     if (confirmationUnknown) "保存结果待确认" else "$title 失败",
@@ -1802,6 +2293,7 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         keepAsScreenPreview: Boolean,
         connection: ToolboxConnection,
         captureId: String? = null,
+        screenMonitorSession: Long? = null,
     ) {
         if (keepAsScreenPreview) {
             require(descriptor.mime == "image/jpeg") { "电脑返回的屏幕快照类型无效" }
@@ -1876,7 +2368,12 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 finishRemoteDownloadBestEffort(descriptor.id, connection)
                 activeTransferId = null
                 activeTransferConnection = null
-                publishScreenPreview(preview, requireNotNull(captureId), connection)
+                publishScreenPreview(
+                    preview = preview,
+                    captureId = requireNotNull(captureId),
+                    connection = connection,
+                    monitorSession = screenMonitorSession,
+                )
             } else {
                 val saved = withContext(Dispatchers.IO) {
                     transferStore.saveToDownloads(part, descriptor.name, descriptor.mime)
@@ -1908,29 +2405,159 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun requestAndDownloadScreen(
         logSummary: String,
         connection: ToolboxConnection,
+        task: ToolboxTask,
+        monitorSession: Long?,
     ) {
+        pendingMonitorCapture.clear(monitorSession)
+        val logRequest = mutableUiState.value.screenPreview == null
         val result = requestToolbox(
             command = QuickerToolboxProtocol.screenCaptureCommand(),
             expectedOperation = QuickerToolboxProtocol.OP_SCREEN_CAPTURE,
-            logSummary = logSummary,
+            logSummary = logSummary.takeIf { logRequest },
+            logRequest = logRequest,
             timeoutMs = SCREEN_CAPTURE_TIMEOUT_MS,
             actionId = connection.actionId,
             expectedConnection = connection.connection,
         ) as QuickerToolboxResult.ScreenCapture
         downloadFromComputer(
             descriptor = result.descriptor,
-            task = ToolboxTask.SCREEN,
+            task = task,
             keepAsScreenPreview = true,
             connection = connection,
             captureId = result.captureId,
+            screenMonitorSession = monitorSession,
         )
+    }
+
+    private suspend fun requestDesktopWindows(
+        connection: ToolboxConnection,
+        logSummary: String,
+    ): List<QuickerDesktopWindow> {
+        val result = requestToolbox(
+            command = QuickerToolboxProtocol.windowsListCommand(),
+            expectedOperation = QuickerToolboxProtocol.OP_WINDOWS_LIST,
+            logSummary = logSummary,
+            actionId = connection.actionId,
+            expectedConnection = connection.connection,
+        ) as QuickerToolboxResult.Windows
+        return result.items
+    }
+
+    private suspend fun refreshDesktopWindowsIfStale(
+        connection: ToolboxConnection,
+        monitorSession: Long?,
+    ) {
+        val state = mutableUiState.value
+        if (state.linkCapabilities?.windowList != true) return
+        if (!canPublishMonitorResult(connection, monitorSession)) return
+        val now = SystemClock.elapsedRealtime()
+        if (
+            state.desktopWindowsLoaded &&
+            now - desktopWindowsRefreshedAtMillis < WINDOW_LIST_REFRESH_INTERVAL_MS
+        ) {
+            return
+        }
+        mutableUiState.update {
+            it.copy(
+                toolboxStatus = ToolboxStatus.Working(
+                    ToolboxTask.WINDOWS,
+                    "读取电脑窗口",
+                    "正在更新可切换窗口",
+                ),
+            )
+        }
+        try {
+            val windows = requestDesktopWindows(connection, "读取电脑窗口：Quicker Link")
+            publishDesktopWindows(
+                windows = windows,
+                successTitle = "已获取电脑当前屏幕",
+                connection = connection,
+                monitorSession = monitorSession,
+            )
+        } catch (error: Exception) {
+            if (error is CancellationException && !currentCoroutineContext().isActive) throw error
+            if (!canPublishMonitorResult(connection, monitorSession)) {
+                clearWorkingToolboxStatus()
+                return
+            }
+            desktopWindowsRefreshedAtMillis = now
+            val message = boundedUiErrorMessage(error.message, "读取窗口失败")
+            mutableUiState.update {
+                it.copy(
+                    desktopWindowsLoaded = true,
+                    desktopWindowsError = message,
+                    toolboxStatus = ToolboxStatus.Success(
+                        ToolboxTask.SCREEN,
+                        "已获取电脑当前屏幕",
+                        "窗口列表暂不可用",
+                    ),
+                )
+            }
+            appendLog(QuickerEventDirection.SYSTEM, "读取电脑窗口失败：${compactLogText(message)}")
+        }
+    }
+
+    private fun publishDesktopWindows(
+        windows: List<QuickerDesktopWindow>,
+        successTitle: String,
+        connection: ToolboxConnection,
+        monitorSession: Long?,
+    ): Boolean {
+        if (!canPublishMonitorResult(connection, monitorSession)) {
+            clearWorkingToolboxStatus()
+            return false
+        }
+        desktopWindowsRefreshedAtMillis = SystemClock.elapsedRealtime()
+        desktopWindowsConnection = connection
+        mutableUiState.update {
+            it.copy(
+                desktopWindows = windows,
+                desktopWindowsLoaded = true,
+                desktopWindowsError = null,
+                toolboxStatus = ToolboxStatus.Success(
+                    ToolboxTask.WINDOWS,
+                    successTitle,
+                    if (windows.isEmpty()) "没有可切换窗口" else "${windows.size} 个窗口",
+                ),
+            )
+        }
+        return true
+    }
+
+    private fun canPublishMonitorResult(
+        connection: ToolboxConnection,
+        monitorSession: Long?,
+    ): Boolean = shouldPublishMonitorResult(
+        connectionCurrent = connectionManager.isCurrentReadyConnection(connection.connection),
+        connectionState = mutableUiState.value.connectionState,
+        requestedMonitorSession = monitorSession,
+        activeMonitorSession = activeScreenMonitorSession,
+        monitorActive = screenMonitorActive,
+    )
+
+    private fun clearWorkingToolboxStatus() {
+        mutableUiState.update { state ->
+            if (state.toolboxStatus is ToolboxStatus.Working) {
+                state.copy(toolboxStatus = ToolboxStatus.Idle)
+            } else {
+                state
+            }
+        }
     }
 
     private suspend fun publishScreenPreview(
         preview: ScreenPreview,
         captureId: String,
         connection: ToolboxConnection,
+        monitorSession: Long?,
     ) {
+        val publishAllowed = canPublishMonitorResult(connection, monitorSession)
+        if (!publishAllowed) {
+            withContext(Dispatchers.IO) { transferStore.delete(preview.file) }
+            clearWorkingToolboxStatus()
+            return
+        }
+        pendingMonitorCapture.clear(monitorSession)
         val previousPath = mutableUiState.value.screenPreview?.path
         val capturedAt = LocalTime.now().format(timeFormatter)
         mutableUiState.update {
@@ -1952,7 +2579,9 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         if (previousPath != null && previousPath != preview.file.absolutePath) {
             withContext(Dispatchers.IO) { transferStore.delete(File(previousPath)) }
         }
-        appendLog(QuickerEventDirection.INCOMING, "已获取电脑当前屏幕")
+        if (previousPath == null) {
+            appendLog(QuickerEventDirection.INCOMING, "已获取电脑当前屏幕")
+        }
     }
 
     private fun updateTransferProgress(
@@ -2031,6 +2660,20 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     state.screenPreview?.copy(captureId = null)
                 },
+                desktopWindows = if (connectionState is QuickerConnectionState.Ready) {
+                    state.desktopWindows
+                } else {
+                    emptyList()
+                },
+                desktopWindowsLoaded = connectionState is QuickerConnectionState.Ready &&
+                    state.desktopWindowsLoaded,
+                desktopWindowsError = if (connectionState is QuickerConnectionState.Ready) {
+                    state.desktopWindowsError
+                } else {
+                    null
+                },
+                windowActivationQueued = connectionState is QuickerConnectionState.Ready &&
+                    state.windowActivationQueued,
                 connectionError = when {
                     errorMessage != null -> errorMessage
                     connectionState is QuickerConnectionState.Connecting ||
@@ -2041,7 +2684,14 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             )
         }
         if (connectionState !is QuickerConnectionState.Ready) {
+            screenMonitorActive = false
+            activeScreenMonitorSession = null
+            pendingMonitorCapture.clear()
             screenConnection = null
+            pendingScreenTaps.clear()
+            pendingWindowActivations.clear()
+            desktopWindowsConnection = null
+            desktopWindowsRefreshedAtMillis = 0L
         }
 
         when (connectionState) {
@@ -2101,9 +2751,17 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 linkCapabilities = it.linkCapabilities.takeIf { keepCapabilities },
                 screenPreview = it.screenPreview?.copy(captureId = null),
+                desktopWindows = emptyList(),
+                desktopWindowsLoaded = false,
+                desktopWindowsError = null,
+                windowActivationQueued = false,
             )
         }
         screenConnection = null
+        pendingScreenTaps.clear()
+        pendingWindowActivations.clear()
+        desktopWindowsConnection = null
+        desktopWindowsRefreshedAtMillis = 0L
         val connectionToPersist = StoredConnection(
             ipAddress = config.ipAddress,
             port = config.port,
@@ -2228,6 +2886,9 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
+        screenMonitorActive = false
+        pendingScreenTaps.clear()
+        pendingWindowActivations.clear()
         discoveryJob?.cancel()
         toolboxJob?.cancel()
         updateChecker.close()
@@ -2245,6 +2906,9 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         const val FILE_PICK_TIMEOUT_MS = 5 * 60_000L
         const val FILE_RECONNECT_TIMEOUT_MS = 20_000L
         const val REMOTE_CLEANUP_TIMEOUT_MS = 5_000L
+        const val WINDOW_LIST_REFRESH_INTERVAL_MS = 45_000L
+        const val SCREEN_CLICK_SETTLE_MS = 120L
+        const val WINDOW_ACTIVATION_SETTLE_MS = 120L
     }
 }
 

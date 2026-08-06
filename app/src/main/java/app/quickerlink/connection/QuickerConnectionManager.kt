@@ -64,15 +64,19 @@ data class QuickerConnectionEvent(
 
 class QuickerConnectionBinding internal constructor(
     private val config: QuickerConnectionConfig,
+    private val generation: Long,
 ) {
     val endpoint: String = QuickerEndpoint.url(config)
 
     internal fun matches(other: QuickerConnectionConfig?): Boolean = config == other
 
-    override fun equals(other: Any?): Boolean =
-        other is QuickerConnectionBinding && config == other.config
+    internal fun matchesCurrent(other: QuickerConnectionConfig?, otherGeneration: Long): Boolean =
+        config == other && generation == otherGeneration
 
-    override fun hashCode(): Int = config.hashCode()
+    override fun equals(other: Any?): Boolean =
+        other is QuickerConnectionBinding && config == other.config && generation == other.generation
+
+    override fun hashCode(): Int = 31 * config.hashCode() + generation.hashCode()
 
     override fun toString(): String = endpoint
 }
@@ -271,7 +275,14 @@ class QuickerConnectionManager private constructor(
         val token = generation.get()
         desiredConfig
             ?.takeIf { readyGeneration == token && socket != null }
-            ?.let(::QuickerConnectionBinding)
+            ?.let { QuickerConnectionBinding(it, token) }
+    }
+
+    fun isCurrentReadyConnection(binding: QuickerConnectionBinding): Boolean = synchronized(lock) {
+        val token = generation.get()
+        readyGeneration == token &&
+            socket != null &&
+            binding.matchesCurrent(desiredConfig, token)
     }
 
     fun dispatchCommand(

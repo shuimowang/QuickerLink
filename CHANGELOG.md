@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.5.0-alpha.6] - 2026-08-07
+
+### Added
+
+- List the computer's Alt+Tab-style desktop windows with app icons and switch to a selected window from the full-screen monitor
+- Add a public feasibility, architecture, protocol, MVP, effort, and risk design for a future cross-device temporary inbox
+
+### Changed
+
+- Open the screen workspace directly as a continuously refreshed, clickable monitor without a separate view/click mode
+- Reduce screen frames to a 1280-pixel long side with JPEG quality tuned for the action channel, then request the next frame only after the current transfer completes
+- Upgrade the strict panel, action-control, toolbox, and desktop-push contract to v9 without retaining the v8 compatibility path
+- Require the separately distributed Quicker Link companion action to be updated to a matching v9-capable version; the App rejects older capabilities and shows the action-page update entry instead of silently falling back
+
+### Fixed
+
+- Keep taps made during an in-flight screen capture bound to the exact frame the user saw, coalesce repeated input, and prioritize a queued window switch before the next automatic frame
+- Discard late screen and window results after reconnecting or reopening the monitor, retry one missed first frame after an older task finishes, and avoid reporting a confirmed click or window switch as failed when only its follow-up refresh failed
+- Preserve window names and switching when a large Alt+Tab list approaches the response limit by dropping optional trailing icons first
+
+### Security
+
+- Activate desktop windows through short-lived random tokens bound to the enumerated window and process instead of accepting raw window handles from Android
+- Keep the Quicker companion implementation outside the public Android repository while documenting the App and future inbox boundaries openly
+
 ## [0.5.0-alpha.5] - 2026-08-02
 
 ### Added

@@ -3,6 +3,7 @@ package app.quickerlink.ui
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -47,6 +49,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
@@ -67,7 +70,6 @@ import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -97,9 +99,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SecondaryScrollableTabRow
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Snackbar
@@ -145,14 +144,17 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleStartEffect
 import app.quickerlink.EventLog
 import app.quickerlink.QuickerUiState
 import app.quickerlink.QuickerDiscoveryState
 import app.quickerlink.QuickerViewModel
 import app.quickerlink.ToolboxStatus
+import app.quickerlink.ToolboxTask
 import app.quickerlink.UiNotice
 import app.quickerlink.formatTransferBytes
 import app.quickerlink.connection.QuickerConnectionState
+import app.quickerlink.connection.QuickerDesktopWindow
 import app.quickerlink.connection.QuickerEndpoint
 import app.quickerlink.connection.QuickerEventDirection
 import app.quickerlink.connection.QuickerSystemCommand
@@ -307,7 +309,12 @@ fun QuickerApp(
                     onSendText = viewModel::sendToolboxText,
                     onPasteText = viewModel::pasteText,
                     onCaptureScreen = viewModel::captureComputerScreen,
+                    onOpenScreenMonitor = viewModel::openComputerScreenMonitor,
+                    onCloseScreenMonitor = viewModel::closeComputerScreenMonitor,
+                    onAutoCaptureScreen = viewModel::captureComputerScreenInMonitor,
                     onScreenClick = viewModel::clickComputerScreen,
+                    onRefreshWindows = viewModel::refreshComputerWindows,
+                    onActivateWindow = viewModel::activateComputerWindow,
                     onSaveScreen = viewModel::saveScreenToDownloads,
                     onChooseFile = onChooseFile,
                     onReceiveFile = viewModel::receiveFileFromComputer,
@@ -1181,7 +1188,7 @@ private fun decodeActionIcon(encoded: String): Bitmap? {
 private const val PNG_ICON_PREFIX = "data:image/png;base64,"
 private const val QUICKER_ICON_URL_PREFIX = "https://files.getquicker.net/"
 private const val QUICK_INPUT_SNACKBAR_ACTION = "quick-input"
-private const val SCREEN_CLICK_REFRESH_INTERVAL_MS = 1_200L
+private const val SCREEN_MONITOR_FRAME_INTERVAL_MS = 220L
 private const val ACTION_NAVIGATION_GRID_INDEX = 2
 private const val ACTIONS_SCREEN_STATE_KEY = "actions-screen"
 private const val TRANSFER_SCREEN_STATE_KEY = "transfer-screen"
@@ -1196,7 +1203,12 @@ private fun TransferScreen(
     onSendText: () -> Unit,
     onPasteText: (String) -> Unit,
     onCaptureScreen: () -> Unit,
+    onOpenScreenMonitor: () -> Unit,
+    onCloseScreenMonitor: () -> Unit,
+    onAutoCaptureScreen: () -> Unit,
     onScreenClick: (String, Int, Int) -> Unit,
+    onRefreshWindows: () -> Unit,
+    onActivateWindow: (String) -> Unit,
     onSaveScreen: () -> Unit,
     onChooseFile: () -> Unit,
     onReceiveFile: () -> Unit,
@@ -1209,7 +1221,6 @@ private fun TransferScreen(
     val controlsLocked = state.toolboxStatus is ToolboxStatus.Working ||
         (state.toolboxStatus as? ToolboxStatus.Failed)?.canRetry == true
     var showScreenPreview by rememberSaveable { mutableStateOf(false) }
-    var screenClickMode by rememberSaveable { mutableStateOf(false) }
     var pendingSystemCommand by remember { mutableStateOf<QuickerSystemCommand?>(null) }
 
     LazyColumn(
@@ -1299,10 +1310,8 @@ private fun TransferScreen(
                         .fillMaxWidth()
                         .aspectRatio(16f / 9f)
                         .clickable(
-                            enabled = preview != null || connected && !controlsLocked,
-                            onClick = {
-                                if (preview == null) onCaptureScreen() else showScreenPreview = true
-                            },
+                            enabled = connected && !controlsLocked,
+                            onClick = { showScreenPreview = true },
                         ),
                     shape = RoundedCornerShape(6.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
@@ -1318,7 +1327,7 @@ private fun TransferScreen(
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    "点击获取电脑当前屏幕",
+                                    "点击进入实时控制",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -1489,14 +1498,23 @@ private fun TransferScreen(
     }
 
     if (showScreenPreview) {
-        state.screenPreview?.let { preview ->
-            val imageDimensions by produceState<Pair<Int, Int>?>(
-                initialValue = null,
-                key1 = preview.path,
-            ) {
-                value = withContext(Dispatchers.IO) {
+        val preview = state.screenPreview
+        LifecycleStartEffect(connected) {
+            if (connected) {
+                onOpenScreenMonitor()
+            } else {
+                onCloseScreenMonitor()
+            }
+            onStopOrDispose { onCloseScreenMonitor() }
+        }
+        val imageDimensions by produceState<Pair<Int, Int>?>(
+            initialValue = null,
+            key1 = preview?.path,
+        ) {
+            value = preview?.let { current ->
+                withContext(Dispatchers.IO) {
                     val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeFile(preview.path, options)
+                    BitmapFactory.decodeFile(current.path, options)
                     if (options.outWidth > 0 && options.outHeight > 0) {
                         options.outWidth to options.outHeight
                     } else {
@@ -1504,123 +1522,137 @@ private fun TransferScreen(
                     }
                 }
             }
-            val captureId = preview.captureId
-            val clickAvailable = state.linkCapabilities?.screenClick == true &&
-                captureId != null && connected && !controlsLocked && imageDimensions != null
-            val automaticRefreshEnabled = showScreenPreview &&
-                screenClickMode &&
-                connected &&
-                !controlsLocked &&
-                state.toolboxStatus !is ToolboxStatus.Failed
-            LaunchedEffect(
-                automaticRefreshEnabled,
-                preview.captureId,
-            ) {
-                if (automaticRefreshEnabled) {
-                    delay(SCREEN_CLICK_REFRESH_INTERVAL_MS)
-                    onCaptureScreen()
+        }
+        val captureId = preview?.captureId
+        val workingTask = (state.toolboxStatus as? ToolboxStatus.Working)?.task
+        val clickAvailable = canAcceptScreenTap(
+            screenClickSupported = state.linkCapabilities?.screenClick == true,
+            connected = connected,
+            captureAvailable = captureId != null,
+            dimensionsAvailable = imageDimensions != null,
+            controlsLocked = controlsLocked,
+            workingTask = workingTask,
+            windowActivationQueued = state.windowActivationQueued,
+        )
+        val screenFailure = (state.toolboxStatus as? ToolboxStatus.Failed)
+            ?.task
+            ?.let { it == ToolboxTask.SCREEN || it == ToolboxTask.SCREEN_CLICK }
+            ?: false
+        val automaticRefreshEnabled = preview != null &&
+            connected &&
+            !controlsLocked &&
+            !screenFailure
+        LaunchedEffect(
+            automaticRefreshEnabled,
+            preview?.captureId,
+        ) {
+            if (automaticRefreshEnabled) {
+                delay(SCREEN_MONITOR_FRAME_INTERVAL_MS)
+                onAutoCaptureScreen()
+            }
+        }
+        val screenTapModifier = if (clickAvailable) {
+            Modifier.pointerInput(preview?.path, captureId, imageDimensions) {
+                detectTapGestures { offset ->
+                    val dimensions = imageDimensions ?: return@detectTapGestures
+                    val point = mapScreenTap(
+                        containerWidth = size.width.toFloat(),
+                        containerHeight = size.height.toFloat(),
+                        imageWidth = dimensions.first,
+                        imageHeight = dimensions.second,
+                        tapX = offset.x,
+                        tapY = offset.y,
+                    ) ?: return@detectTapGestures
+                    onScreenClick(requireNotNull(captureId), point.x, point.y)
                 }
             }
-            val screenTapModifier = if (screenClickMode && clickAvailable) {
-                Modifier.pointerInput(preview.path, captureId, imageDimensions) {
-                    detectTapGestures { offset ->
-                        val dimensions = imageDimensions ?: return@detectTapGestures
-                        val point = mapScreenTap(
-                            containerWidth = size.width.toFloat(),
-                            containerHeight = size.height.toFloat(),
-                            imageWidth = dimensions.first,
-                            imageHeight = dimensions.second,
-                            tapX = offset.x,
-                            tapY = offset.y,
-                        ) ?: return@detectTapGestures
-                        onScreenClick(requireNotNull(captureId), point.x, point.y)
-                    }
-                }
-            } else {
-                Modifier
-            }
-            Dialog(
-                onDismissRequest = {
-                    screenClickMode = false
-                    showScreenPreview = false
-                },
-                properties = DialogProperties(
-                    usePlatformDefaultWidth = false,
-                ),
+        } else {
+            Modifier
+        }
+        Dialog(
+            onDismissRequest = {
+                onCloseScreenMonitor()
+                showScreenPreview = false
+            },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black),
             ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black),
+                        .fillMaxWidth()
+                        .weight(1f),
                     contentAlignment = Alignment.Center,
                 ) {
-                    AsyncImage(
-                        model = File(preview.path),
-                        contentDescription = "电脑当前屏幕",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .then(screenTapModifier),
-                        contentScale = ContentScale.Fit,
-                    )
-                    if (state.linkCapabilities?.screenClick == true) {
-                        SingleChoiceSegmentedButtonRow(
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(18.dp)
-                                .widthIn(max = 184.dp),
-                        ) {
-                            SegmentedButton(
-                                selected = !screenClickMode,
-                                onClick = { screenClickMode = false },
-                                shape = SegmentedButtonDefaults.itemShape(0, 2),
-                                icon = {
-                                    Icon(
-                                        Icons.Outlined.Visibility,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                },
-                                label = { Text("查看") },
-                            )
-                            SegmentedButton(
-                                selected = screenClickMode,
-                                onClick = { screenClickMode = true },
-                                enabled = clickAvailable,
-                                shape = SegmentedButtonDefaults.itemShape(1, 2),
-                                icon = {
-                                    Icon(
-                                        Icons.Outlined.TouchApp,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                },
-                                label = { Text("点击") },
-                            )
+                    if (preview == null) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = Color.White, strokeWidth = 2.5.dp)
+                            Spacer(Modifier.height(12.dp))
+                            Text("正在获取电脑屏幕", color = Color.White)
                         }
+                    } else {
+                        AsyncImage(
+                            model = File(preview.path),
+                            contentDescription = "电脑当前屏幕",
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .then(screenTapModifier),
+                            contentScale = ContentScale.Fit,
+                        )
                     }
                     Row(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .padding(18.dp),
+                            .padding(14.dp),
                     ) {
                         IconButton(
                             onClick = onCaptureScreen,
                             enabled = connected && !controlsLocked,
                             modifier = Modifier.background(Color.Black.copy(alpha = 0.58f), CircleShape),
                         ) {
-                            Icon(Icons.Outlined.Sync, contentDescription = "刷新屏幕", tint = Color.White)
+                            if ((state.toolboxStatus as? ToolboxStatus.Working)?.task == ToolboxTask.SCREEN) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                Icon(Icons.Outlined.Sync, contentDescription = "刷新屏幕", tint = Color.White)
+                            }
                         }
                         Spacer(Modifier.width(8.dp))
                         IconButton(
                             onClick = {
-                                screenClickMode = false
+                                onCloseScreenMonitor()
                                 showScreenPreview = false
                             },
                             modifier = Modifier.background(Color.Black.copy(alpha = 0.58f), CircleShape),
                         ) {
-                            Icon(Icons.Outlined.Close, contentDescription = "关闭预览", tint = Color.White)
+                            Icon(Icons.Outlined.Close, contentDescription = "关闭监控", tint = Color.White)
                         }
                     }
+                }
+                if (state.linkCapabilities?.windowList == true) {
+                    val activationEnabled = canActivateDesktopWindow(
+                        windowActivateSupported = state.linkCapabilities.windowActivate,
+                        connected = connected,
+                        controlsLocked = controlsLocked,
+                        workingTask = workingTask,
+                    )
+                    DesktopWindowSwitcher(
+                        windows = state.desktopWindows,
+                        loaded = state.desktopWindowsLoaded,
+                        error = state.desktopWindowsError,
+                        loading = workingTask == ToolboxTask.WINDOWS,
+                        activationQueued = state.windowActivationQueued,
+                        activationEnabled = activationEnabled,
+                        refreshEnabled = connected && !controlsLocked,
+                        onRefresh = onRefreshWindows,
+                        onActivate = onActivateWindow,
+                    )
                 }
             }
         }
@@ -1649,6 +1681,175 @@ private fun TransferScreen(
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun DesktopWindowSwitcher(
+    windows: List<QuickerDesktopWindow>,
+    loaded: Boolean,
+    error: String?,
+    loading: Boolean,
+    activationQueued: Boolean,
+    activationEnabled: Boolean,
+    refreshEnabled: Boolean,
+    onRefresh: () -> Unit,
+    onActivate: (String) -> Unit,
+) {
+    val busy = loading || activationQueued
+    Surface(
+        color = Color(0xff171717),
+        contentColor = Color.White,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, top = 4.dp, end = 8.dp, bottom = 8.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(38.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Outlined.DesktopWindows,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = Color.White.copy(alpha = 0.82f),
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    "窗口",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    when {
+                        error != null -> "暂不可用"
+                        activationQueued -> "等待切换"
+                        !loaded || loading -> "正在更新"
+                        else -> "${windows.size} 个"
+                    },
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.58f),
+                )
+                if (busy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                }
+                IconButton(
+                    onClick = onRefresh,
+                    enabled = refreshEnabled && !busy,
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(Icons.Outlined.Sync, contentDescription = "刷新窗口列表", modifier = Modifier.size(19.dp))
+                }
+            }
+
+            if (windows.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(58.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        error ?: if (loaded) "没有可切换窗口" else "正在读取可切换窗口",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.68f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            } else {
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(66.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(end = 4.dp),
+                ) {
+                    items(windows, key = QuickerDesktopWindow::token) { window ->
+                        val selectedColor = Color(0xff25465f)
+                        Surface(
+                            onClick = { onActivate(window.token) },
+                            enabled = activationEnabled && !window.active,
+                            modifier = Modifier
+                                .width(148.dp)
+                                .height(62.dp),
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (window.active) selectedColor else Color(0xff292929),
+                            border = BorderStroke(
+                                1.dp,
+                                if (window.active) Color(0xff70bff2) else Color.White.copy(alpha = 0.1f),
+                            ),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 8.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                DesktopWindowArtwork(window.icon)
+                                Spacer(Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        window.title,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (window.active) FontWeight.SemiBold else FontWeight.Medium,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        window.processName,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White.copy(alpha = 0.56f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DesktopWindowArtwork(icon: String?) {
+    val encoded = icon
+        ?.takeIf { it.startsWith(PNG_ICON_PREFIX) }
+        ?.removePrefix(PNG_ICON_PREFIX)
+    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = encoded) {
+        value = encoded?.let { withContext(Dispatchers.Default) { decodeActionIcon(it) } }
+    }
+    Box(
+        modifier = Modifier.size(34.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = requireNotNull(bitmap).asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier.size(30.dp),
+            )
+        } else {
+            Icon(
+                Icons.Outlined.DesktopWindows,
+                contentDescription = null,
+                modifier = Modifier.size(27.dp),
+                tint = Color.White.copy(alpha = 0.72f),
+            )
+        }
     }
 }
 

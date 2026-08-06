@@ -14,7 +14,7 @@ object QuickerMobilePushProtocol {
     const val OPERATION = "quickerlink.push"
 
     private const val PROTOCOL = "quickerlink.mobile-push"
-    private const val VERSION = 8
+    private const val VERSION = 9
     private const val MAX_TEXT_CHARS = 16_000
     private const val MAX_TEXT_BYTES = 48 * 1024
     private const val MAX_TITLE_CHARS = 80

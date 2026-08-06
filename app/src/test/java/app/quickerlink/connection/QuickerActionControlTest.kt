@@ -9,20 +9,20 @@ import org.junit.Test
 
 class QuickerActionControlTest {
     @Test
-    fun `builds strict v8 stop command for ids and names`() {
+    fun `builds strict v9 stop command for ids and names`() {
         assertEquals(
-            "quickerlink:stop-action:v8:QUFBQUFBQUEtQUFBQS00QUFBLThBQUEtQUFBQUFBQUFBQUFB",
+            "quickerlink:stop-action:v9:QUFBQUFBQUEtQUFBQS00QUFBLThBQUEtQUFBQUFBQUFBQUFB",
             QuickerActionControlProtocol.stopCommand(ACTION_ID.uppercase()),
         )
         assertEquals(
-            "quickerlink:stop-action:v8:5oiR55qE5Yqo5L2c",
+            "quickerlink:stop-action:v9:5oiR55qE5Yqo5L2c",
             QuickerActionControlProtocol.stopCommand("我的动作"),
         )
     }
 
     @Test
     fun `parses compact success returned as string or object`() {
-        val payload = """{"protocol":"quickerlink.stop-action","version":8,"ok":true,"actionId":"$ACTION_ID"}"""
+        val payload = """{"protocol":"quickerlink.stop-action","version":9,"ok":true,"actionId":"$ACTION_ID"}"""
 
         assertEquals(
             ACTION_ID,
@@ -53,7 +53,7 @@ class QuickerActionControlTest {
             val error = assertThrows(IllegalArgumentException::class.java) {
                 QuickerActionControlProtocol.parseStopResponse(
                     JsonPrimitive(
-                        """{"protocol":"quickerlink.stop-action","version":8,"ok":false,"code":"$code"}""",
+                        """{"protocol":"quickerlink.stop-action","version":9,"ok":false,"code":"$code"}""",
                     ),
                     ACTION_ID,
                 )
@@ -65,6 +65,7 @@ class QuickerActionControlTest {
     @Test
     fun `identifies old action control protocol as version mismatch`() {
         listOf(
+            """{"protocol":"quickerlink.stop-action","version":8,"ok":true}""",
             """{"protocol":"quickerlink.stop-action","version":5,"ok":true}""",
             """{"protocol":"quickerlink.panel-actions","version":5,"ok":false,"code":"unsupported_command","error":"不支持"}""",
         ).forEach { payload ->
@@ -82,7 +83,7 @@ class QuickerActionControlTest {
             """{"version":5,"ok":true}""",
             """{"protocol":7,"version":5,"ok":true}""",
             """{"protocol":"quickerlink.stop-action","version":"5","ok":true}""",
-            """{"protocol":"quickerlink.panel-actions","version":8,"ok":false,"code":"unsupported_command","error":"不支持"}""",
+            """{"protocol":"quickerlink.panel-actions","version":9,"ok":false,"code":"unsupported_command","error":"不支持"}""",
         ).forEach { payload ->
             val error = assertThrows(IllegalArgumentException::class.java) {
                 QuickerActionControlProtocol.parseStopResponse(JsonPrimitive(payload), ACTION_ID)
@@ -94,10 +95,10 @@ class QuickerActionControlTest {
     @Test
     fun `rejects malformed extended or unknown stop responses`() {
         listOf(
-            """{"protocol":"quickerlink.stop-action","version":8,"ok":true,"actionId":"$ACTION_ID","extra":1}""",
-            """{"protocol":"quickerlink.stop-action","version":8,"ok":false,"code":"unknown"}""",
-            """{"protocol":"quickerlink.stop-action","version":8,"ok":"true","actionId":"$ACTION_ID"}""",
-            """{"protocol":"quickerlink.stop-action","version":8}""",
+            """{"protocol":"quickerlink.stop-action","version":9,"ok":true,"actionId":"$ACTION_ID","extra":1}""",
+            """{"protocol":"quickerlink.stop-action","version":9,"ok":false,"code":"unknown"}""",
+            """{"protocol":"quickerlink.stop-action","version":9,"ok":"true","actionId":"$ACTION_ID"}""",
+            """{"protocol":"quickerlink.stop-action","version":9}""",
             """[]""",
         ).forEach { payload ->
             assertThrows(IllegalArgumentException::class.java) {

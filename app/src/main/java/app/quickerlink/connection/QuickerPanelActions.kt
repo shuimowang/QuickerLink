@@ -44,6 +44,8 @@ data class QuickerLinkCapabilities(
     val clipboardRead: Boolean = true,
     val clipboardWrite: Boolean = true,
     val systemControl: Boolean = true,
+    val windowList: Boolean = true,
+    val windowActivate: Boolean = true,
     val maxFileBytes: Long = QuickerToolboxProtocol.MAX_FILE_BYTES,
     val chunkBytes: Int = QuickerToolboxProtocol.CHUNK_BYTES,
     val desktopPush: QuickerDesktopPushCapabilities = QuickerDesktopPushCapabilities(),
@@ -54,12 +56,12 @@ internal class UnsupportedPanelCatalogVersionException :
 
 object QuickerPanelActionsProtocol {
     const val COMPANION_SHARED_ACTION_ID = "b02b2732-f087-4e45-416d-08deee3e76ba"
-    const val LIST_COMMAND = "quickerlink:list-panel-actions:v8"
+    const val LIST_COMMAND = "quickerlink:list-panel-actions:v9"
     const val GLOBAL_SCENE = "_global"
     const val COMMON_SCENE = "common"
 
     private const val PROTOCOL = "quickerlink.panel-actions"
-    private const val VERSION = 8
+    private const val VERSION = 9
     private const val MAX_PAYLOAD_LENGTH = 262_144
     private const val MAX_GROUPS_PER_SCENE = 10_000
     private const val MAX_ACTIONS = 10_000
@@ -82,6 +84,8 @@ object QuickerPanelActionsProtocol {
         "clipboardRead",
         "clipboardWrite",
         "systemControl",
+        "windowList",
+        "windowActivate",
         "fileTransfer",
         "desktopPush",
     )
@@ -128,6 +132,8 @@ object QuickerPanelActionsProtocol {
         require(capabilities.boolean("clipboardRead")) { "当前 Quicker Link 动作不支持读取剪贴板" }
         require(capabilities.boolean("clipboardWrite")) { "当前 Quicker Link 动作不支持写入剪贴板" }
         require(capabilities.boolean("systemControl")) { "当前 Quicker Link 动作不支持电脑控制" }
+        require(capabilities.boolean("windowList")) { "当前 Quicker Link 动作不支持窗口列表" }
+        require(capabilities.boolean("windowActivate")) { "当前 Quicker Link 动作不支持窗口切换" }
         val fileTransfer = capabilities.obj("fileTransfer", "动作目录缺少文件传输能力", "文件传输能力格式无效")
         fileTransfer.requireFields(fileTransferCapabilityFields, "文件传输能力字段无效")
         val maxFileBytes = fileTransfer.long("maxBytes")
@@ -162,6 +168,8 @@ object QuickerPanelActionsProtocol {
                 screenClick = true,
                 clipboardWrite = true,
                 systemControl = true,
+                windowList = true,
+                windowActivate = true,
                 maxFileBytes = maxFileBytes,
                 chunkBytes = chunkBytes,
                 desktopPush = QuickerDesktopPushCapabilities(

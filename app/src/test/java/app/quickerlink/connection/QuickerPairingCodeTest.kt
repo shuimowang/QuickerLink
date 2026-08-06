@@ -11,7 +11,7 @@ class QuickerPairingCodeTest {
             "192.168.1.56",
             668,
             "a+b & c",
-            "7db7596b-3b46-4afc-ab07-c96309d30aa8",
+            "11111111-2222-4333-8444-555555555555",
         )
 
         assertEquals(config, QuickerPairingCode.parse(QuickerPairingCode.encode(config)))

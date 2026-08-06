@@ -14,10 +14,10 @@ internal class UnsupportedActionControlVersionException :
     IllegalArgumentException("动作控制协议版本不受支持")
 
 object QuickerActionControlProtocol {
-    private const val STOP_COMMAND_PREFIX = "quickerlink:stop-action:v8:"
+    private const val STOP_COMMAND_PREFIX = "quickerlink:stop-action:v9:"
     private const val PROTOCOL = "quickerlink.stop-action"
     private const val LEGACY_CATALOG_PROTOCOL = "quickerlink.panel-actions"
-    private const val VERSION = 8
+    private const val VERSION = 9
     private const val MAX_PAYLOAD_LENGTH = 1_024
     private const val MAX_ERROR_CODE_LENGTH = 64
     private val successFields = setOf("protocol", "version", "ok", "actionId")

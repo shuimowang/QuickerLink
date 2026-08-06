@@ -434,7 +434,7 @@ class QuickerConnectionManagerTest {
     }
 
     @Test
-    fun `expected connection binding survives reconnect and rejects a different target`() = runTest {
+    fun `expected target binding survives reconnect while ready generation changes`() = runTest {
         val factory = FakeWebSocketFactory()
         val manager = QuickerConnectionManager(
             socketFactory = factory,
@@ -457,6 +457,8 @@ class QuickerConnectionManagerTest {
         reconnectedSocket.receive(
             """{"messageType":6,"replyTo":$reconnectAuthSerial,"isSuccess":true}""",
         )
+        assertFalse(manager.isCurrentReadyConnection(binding))
+        assertTrue(manager.isCurrentReadyConnection(requireNotNull(manager.currentReadyConnectionBinding())))
         val accepted = async {
             manager.sendCommand(
                 operation = "action",

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-There is no stable production release yet. `v0.5.0-alpha.5` is a dedicated-key-signed prerelease for testing and receives fixes on a best-effort basis. Pre-release builds may change storage or protocol behavior without backward compatibility.
+There is no stable production release yet. `v0.5.0-alpha.6` is a dedicated-key-signed prerelease for testing and receives fixes on a best-effort basis. Pre-release builds may change storage or protocol behavior without backward compatibility.
 
 GitHub Releases publish neither debug-signed nor unsigned APKs. Verify the downloaded release APK against the SHA-256 file attached to the same release. A matching checksum verifies bytes; trust in the first installation still depends on obtaining it from the authentic project release page. Subsequent versions must retain the dedicated signing key so Android can verify update continuity.
 
@@ -34,7 +34,8 @@ Do not include real Quicker verification codes, private IP mappings, action para
 - The app does not make a LAN service safe to expose directly to the public internet.
 - Triggered Quicker actions run with the permissions and side effects defined by the user on the computer.
 - Action triggers are dispatched without waiting for completion, so an accepted send does not prove that the computer-side action finished successfully.
-- The current Android client and companion action use strict generation v8 capability and response contracts. Older or malformed catalog, stop, toolbox, and desktop-push data is rejected rather than coerced.
+- The current Android client and companion action use strict generation v9 capability and response contracts. Older or malformed catalog, stop, toolbox, desktop-push, and desktop-window data is rejected rather than coerced.
+- Desktop-window activation accepts only short-lived random tokens bound to the enumerated window and process. Android never receives or submits a raw Windows window handle.
 - A local Quicker automation may ask the companion action to send bounded text, an Android notification, or a staged file offer to authenticated phones. Remote/external action invocation cannot use that desktop-push entry point to submit a computer path. File offers still require explicit acceptance on the phone.
 - Background receive is enabled by default and can be explicitly disabled. It uses an Android `connectedDevice` foreground service with a persistent service notification and Stop action. On Android 13+, denying `POST_NOTIFICATIONS` suppresses visual desktop notifications but does not disable the foreground service or WSS retention. The separate receipt cue is enabled by default, can be disabled without affecting delivery, and respects silent or vibration mode plus notification-stream volume and muting. Incoming text is handled by the application runtime, and file offers remain available for later UI acceptance, so Activity destruction alone does not interrupt delivery while the service and process remain alive. It has no boot receiver and is `START_NOT_STICKY`; stopping the service, force-stopping the app, or losing the process interrupts immediate command handling.
 - Phone-initiated computer clipboard reads and writes require an explicit transfer-page command. Incoming bounded desktop text may attempt to update the phone clipboard, but the app does not continuously watch either clipboard.

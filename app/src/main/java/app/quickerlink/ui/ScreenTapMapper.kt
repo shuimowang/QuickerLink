@@ -1,5 +1,6 @@
 package app.quickerlink.ui
 
+import app.quickerlink.ToolboxTask
 import app.quickerlink.connection.QuickerToolboxProtocol
 import kotlin.math.roundToInt
 
@@ -7,6 +8,37 @@ internal data class NormalizedScreenTap(
     val x: Int,
     val y: Int,
 )
+
+internal fun canAcceptScreenTap(
+    screenClickSupported: Boolean,
+    connected: Boolean,
+    captureAvailable: Boolean,
+    dimensionsAvailable: Boolean,
+    controlsLocked: Boolean,
+    workingTask: ToolboxTask?,
+    windowActivationQueued: Boolean,
+): Boolean {
+    val captureInFlight = workingTask == ToolboxTask.SCREEN
+    return screenClickSupported &&
+        connected &&
+        captureAvailable &&
+        dimensionsAvailable &&
+        !windowActivationQueued &&
+        (!controlsLocked || captureInFlight)
+}
+
+internal fun canActivateDesktopWindow(
+    windowActivateSupported: Boolean,
+    connected: Boolean,
+    controlsLocked: Boolean,
+    workingTask: ToolboxTask?,
+): Boolean {
+    val screenInteractionInFlight = workingTask == ToolboxTask.SCREEN ||
+        workingTask == ToolboxTask.SCREEN_CLICK
+    return windowActivateSupported &&
+        connected &&
+        (!controlsLocked || screenInteractionInFlight)
+}
 
 internal fun mapScreenTap(
     containerWidth: Float,
