@@ -1,6 +1,8 @@
 package app.quickerlink
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
@@ -143,8 +145,20 @@ data class ScreenPreviewState(
     val name: String,
     val capturedAt: String,
     val captureId: String?,
+    val bitmap: Bitmap? = null,
+    val width: Int = 0,
+    val height: Int = 0,
     val savedLocation: String? = null,
 )
+
+private data class DecodedScreenBitmap(
+    val bitmap: Bitmap,
+    val width: Int,
+    val height: Int,
+)
+
+private const val MAX_DECODED_SCREEN_DIMENSION = 1_280
+private const val MAX_DECODED_SCREEN_PIXELS = 1_280L * 1_280L
 
 internal data class QueuedScreenTap(
     val captureId: String,
@@ -528,6 +542,29 @@ internal fun shouldPublishMonitorResult(
         requestedMonitorSession == null ||
             monitorActive && requestedMonitorSession == activeMonitorSession
         )
+
+internal fun isCurrentDisplayedScreenFrame(
+    displayedCaptureId: String?,
+    requestedCaptureId: String,
+    width: Int,
+    height: Int,
+    decoded: Boolean,
+): Boolean = decoded &&
+    width > 0 &&
+    height > 0 &&
+    displayedCaptureId == requestedCaptureId
+
+internal fun shouldRefreshDesktopWindows(
+    loaded: Boolean,
+    lastRefreshedAtMillis: Long,
+    nowMillis: Long,
+    refreshIntervalMillis: Long,
+): Boolean {
+    require(refreshIntervalMillis > 0L)
+    if (!loaded) return true
+    val elapsed = nowMillis - lastRefreshedAtMillis
+    return elapsed < 0L || elapsed >= refreshIntervalMillis
+}
 
 internal fun invalidateScreenMonitorSession(state: QuickerUiState): QuickerUiState = state.copy(
     screenPreview = state.screenPreview?.copy(captureId = null),
@@ -1255,7 +1292,16 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             mutableNotices.tryEmit(UiNotice.Error("请先同步最新版 Quicker Link 动作能力"))
             return
         }
-        if (state.screenPreview?.captureId != captureId) {
+        val displayedFrame = state.screenPreview
+        if (
+            !isCurrentDisplayedScreenFrame(
+                displayedCaptureId = displayedFrame?.captureId,
+                requestedCaptureId = captureId,
+                width = displayedFrame?.width ?: 0,
+                height = displayedFrame?.height ?: 0,
+                decoded = displayedFrame?.bitmap != null,
+            )
+        ) {
             mutableNotices.tryEmit(UiNotice.Error("屏幕画面已失效，请刷新后重试"))
             return
         }
@@ -2452,8 +2498,12 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         if (!canPublishMonitorResult(connection, monitorSession)) return
         val now = SystemClock.elapsedRealtime()
         if (
-            state.desktopWindowsLoaded &&
-            now - desktopWindowsRefreshedAtMillis < WINDOW_LIST_REFRESH_INTERVAL_MS
+            !shouldRefreshDesktopWindows(
+                loaded = state.desktopWindowsLoaded,
+                lastRefreshedAtMillis = desktopWindowsRefreshedAtMillis,
+                nowMillis = now,
+                refreshIntervalMillis = WINDOW_LIST_REFRESH_INTERVAL_MS,
+            )
         ) {
             return
         }
@@ -2557,6 +2607,24 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
             clearWorkingToolboxStatus()
             return
         }
+        val decoded = try {
+            withContext(Dispatchers.IO) { decodeScreenBitmap(preview.file) }
+        } catch (error: Exception) {
+            withContext(NonCancellable + Dispatchers.IO) { transferStore.delete(preview.file) }
+            throw error
+        }
+        if (decoded == null) {
+            withContext(NonCancellable + Dispatchers.IO) { transferStore.delete(preview.file) }
+            throw IllegalArgumentException("电脑返回的屏幕快照无法解码")
+        }
+        if (!canPublishMonitorResult(connection, monitorSession)) {
+            withContext(NonCancellable + Dispatchers.IO) {
+                decoded.bitmap.recycle()
+                transferStore.delete(preview.file)
+            }
+            clearWorkingToolboxStatus()
+            return
+        }
         pendingMonitorCapture.clear(monitorSession)
         val previousPath = mutableUiState.value.screenPreview?.path
         val capturedAt = LocalTime.now().format(timeFormatter)
@@ -2567,6 +2635,9 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
                     name = preview.name,
                     capturedAt = capturedAt,
                     captureId = captureId,
+                    bitmap = decoded.bitmap,
+                    width = decoded.width,
+                    height = decoded.height,
                 ),
                 toolboxStatus = ToolboxStatus.Success(
                     ToolboxTask.SCREEN,
@@ -2906,10 +2977,31 @@ class QuickerViewModel(application: Application) : AndroidViewModel(application)
         const val FILE_PICK_TIMEOUT_MS = 5 * 60_000L
         const val FILE_RECONNECT_TIMEOUT_MS = 20_000L
         const val REMOTE_CLEANUP_TIMEOUT_MS = 5_000L
-        const val WINDOW_LIST_REFRESH_INTERVAL_MS = 45_000L
+        const val WINDOW_LIST_REFRESH_INTERVAL_MS = 8_000L
         const val SCREEN_CLICK_SETTLE_MS = 120L
         const val WINDOW_ACTIVATION_SETTLE_MS = 120L
     }
+}
+
+private fun decodeScreenBitmap(file: File): DecodedScreenBitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.absolutePath, bounds)
+    if (
+        bounds.outWidth !in 1..MAX_DECODED_SCREEN_DIMENSION ||
+        bounds.outHeight !in 1..MAX_DECODED_SCREEN_DIMENSION ||
+        bounds.outWidth.toLong() * bounds.outHeight > MAX_DECODED_SCREEN_PIXELS
+    ) {
+        return null
+    }
+    val bitmap = BitmapFactory.decodeFile(
+        file.absolutePath,
+        BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 },
+    ) ?: return null
+    if (bitmap.width != bounds.outWidth || bitmap.height != bounds.outHeight) {
+        bitmap.recycle()
+        return null
+    }
+    return DecodedScreenBitmap(bitmap, bitmap.width, bitmap.height)
 }
 
 internal fun systemCommandLabel(command: QuickerSystemCommand): String = when (command) {

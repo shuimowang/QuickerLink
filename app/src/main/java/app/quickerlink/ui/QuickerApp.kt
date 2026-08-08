@@ -91,6 +91,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -1188,7 +1189,7 @@ private fun decodeActionIcon(encoded: String): Bitmap? {
 private const val PNG_ICON_PREFIX = "data:image/png;base64,"
 private const val QUICKER_ICON_URL_PREFIX = "https://files.getquicker.net/"
 private const val QUICK_INPUT_SNACKBAR_ACTION = "quick-input"
-private const val SCREEN_MONITOR_FRAME_INTERVAL_MS = 220L
+private const val SCREEN_MONITOR_FRAME_INTERVAL_MS = 80L
 private const val ACTION_NAVIGATION_GRID_INDEX = 2
 private const val ACTIONS_SCREEN_STATE_KEY = "actions-screen"
 private const val TRANSFER_SCREEN_STATE_KEY = "transfer-screen"
@@ -1305,6 +1306,7 @@ private fun TransferScreen(
                 }
 
                 val preview = state.screenPreview
+                val previewBitmap = remember(preview?.bitmap) { preview?.bitmap?.asImageBitmap() }
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1316,7 +1318,7 @@ private fun TransferScreen(
                     shape = RoundedCornerShape(6.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
                 ) {
-                    if (preview == null) {
+                    if (previewBitmap == null) {
                         Box(contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(
@@ -1334,9 +1336,9 @@ private fun TransferScreen(
                             }
                         }
                     } else {
-                        AsyncImage(
-                            model = File(preview.path),
-                            contentDescription = "电脑当前屏幕，${preview.capturedAt}",
+                        Image(
+                            bitmap = previewBitmap,
+                            contentDescription = "电脑当前屏幕，${preview?.capturedAt.orEmpty()}",
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Fit,
                         )
@@ -1507,22 +1509,10 @@ private fun TransferScreen(
             }
             onStopOrDispose { onCloseScreenMonitor() }
         }
-        val imageDimensions by produceState<Pair<Int, Int>?>(
-            initialValue = null,
-            key1 = preview?.path,
-        ) {
-            value = preview?.let { current ->
-                withContext(Dispatchers.IO) {
-                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeFile(current.path, options)
-                    if (options.outWidth > 0 && options.outHeight > 0) {
-                        options.outWidth to options.outHeight
-                    } else {
-                        null
-                    }
-                }
-            }
-        }
+        val displayedBitmap = remember(preview?.bitmap) { preview?.bitmap?.asImageBitmap() }
+        val imageDimensions = preview
+            ?.takeIf { displayedBitmap != null && it.width > 0 && it.height > 0 }
+            ?.let { it.width to it.height }
         val captureId = preview?.captureId
         val workingTask = (state.toolboxStatus as? ToolboxStatus.Working)?.task
         val clickAvailable = canAcceptScreenTap(
@@ -1587,15 +1577,15 @@ private fun TransferScreen(
                         .weight(1f),
                     contentAlignment = Alignment.Center,
                 ) {
-                    if (preview == null) {
+                    if (displayedBitmap == null) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator(color = Color.White, strokeWidth = 2.5.dp)
                             Spacer(Modifier.height(12.dp))
                             Text("正在获取电脑屏幕", color = Color.White)
                         }
                     } else {
-                        AsyncImage(
-                            model = File(preview.path),
+                        Image(
+                            bitmap = displayedBitmap,
                             contentDescription = "电脑当前屏幕",
                             modifier = Modifier
                                 .fillMaxSize()
@@ -1612,16 +1602,12 @@ private fun TransferScreen(
                             onClick = onCaptureScreen,
                             enabled = connected && !controlsLocked,
                             modifier = Modifier.background(Color.Black.copy(alpha = 0.58f), CircleShape),
+                            colors = IconButtonDefaults.iconButtonColors(
+                                contentColor = Color.White,
+                                disabledContentColor = Color.White,
+                            ),
                         ) {
-                            if ((state.toolboxStatus as? ToolboxStatus.Working)?.task == ToolboxTask.SCREEN) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    color = Color.White,
-                                    strokeWidth = 2.dp,
-                                )
-                            } else {
-                                Icon(Icons.Outlined.Sync, contentDescription = "刷新屏幕", tint = Color.White)
-                            }
+                            Icon(Icons.Outlined.Sync, contentDescription = "刷新屏幕", tint = Color.White)
                         }
                         Spacer(Modifier.width(8.dp))
                         IconButton(

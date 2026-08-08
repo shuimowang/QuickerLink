@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.5.0-alpha.7] - 2026-08-08
+
+### Changed
+
+- Shorten the idle delay between completed screen frames while preserving one in-flight request and interaction priority
+- Refresh the desktop-window snapshot more frequently without enumerating windows on every screen frame
+
+### Fixed
+
+- Decode each incoming screen frame before atomically replacing the displayed bitmap, so loading never exposes the black monitor background
+- Keep screen coordinates and the one-time click token bound to the exact decoded frame visible on the phone
+- Exclude non-activatable helper windows and group owned popups consistently with the desktop window represented by Alt+Tab
+- Stop the monitor refresh control from alternating between a spinner and refresh icon on every automatic frame
+
 ## [0.5.0-alpha.6] - 2026-08-07
 
 ### Added

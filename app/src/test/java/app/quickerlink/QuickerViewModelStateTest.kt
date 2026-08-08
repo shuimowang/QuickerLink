@@ -197,6 +197,59 @@ class QuickerViewModelStateTest {
     }
 
     @Test
+    fun screenClicksRequireTheCaptureIdAndDimensionsOfTheDecodedDisplayedFrame() {
+        assertTrue(
+            isCurrentDisplayedScreenFrame(
+                displayedCaptureId = FIRST_CAPTURE_ID,
+                requestedCaptureId = FIRST_CAPTURE_ID,
+                width = 1280,
+                height = 720,
+                decoded = true,
+            ),
+        )
+        assertFalse(
+            isCurrentDisplayedScreenFrame(
+                displayedCaptureId = SECOND_CAPTURE_ID,
+                requestedCaptureId = FIRST_CAPTURE_ID,
+                width = 1280,
+                height = 720,
+                decoded = true,
+            ),
+        )
+        assertFalse(
+            isCurrentDisplayedScreenFrame(
+                displayedCaptureId = FIRST_CAPTURE_ID,
+                requestedCaptureId = FIRST_CAPTURE_ID,
+                width = 1280,
+                height = 720,
+                decoded = false,
+            ),
+        )
+        assertFalse(
+            isCurrentDisplayedScreenFrame(
+                displayedCaptureId = FIRST_CAPTURE_ID,
+                requestedCaptureId = FIRST_CAPTURE_ID,
+                width = 0,
+                height = 720,
+                decoded = true,
+            ),
+        )
+    }
+
+    @Test
+    fun desktopWindowListRefreshesOnlyAfterItsCacheExpires() {
+        val interval = 8_000L
+
+        assertTrue(shouldRefreshDesktopWindows(false, 10_000L, 10_001L, interval))
+        assertFalse(shouldRefreshDesktopWindows(true, 10_000L, 17_999L, interval))
+        assertTrue(shouldRefreshDesktopWindows(true, 10_000L, 18_000L, interval))
+        assertTrue(shouldRefreshDesktopWindows(true, 10_000L, 9_999L, interval))
+        assertThrows(IllegalArgumentException::class.java) {
+            shouldRefreshDesktopWindows(true, 10_000L, 10_001L, 0L)
+        }
+    }
+
+    @Test
     fun userConnectionsAllowAnEmptyVerificationCodeButRejectUnsafeValues() {
         assertNull(connectionPasswordValidationError(""))
         assertNull(connectionPasswordValidationError("   "))

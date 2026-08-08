@@ -49,7 +49,7 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 `WS
 
 开启 WebSocket 服务和安全连接 `WSS`，并确认 Windows 防火墙允许 Quicker 使用该端口。强烈建议设置连接验证码：空验证码可以连接，但同一局域网内的其他设备无需验证码即可尝试使用 Quicker WebSocket 能力，只适合你完全信任的网络。配套动作只能读取当前设置，不能替 Quicker 创建、修改或应用验证码；修改设置后请先在 Quicker 中保存，再重新运行配套动作生成二维码。
 
-先从 Quicker 动作库安装配套的 [`Quicker Link`](https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba) 动作。`v0.5.0-alpha.6` App 使用严格的 v9 能力协议，不保留 v8 兼容路径；安装或升级 APK 时必须同时把配套动作更新到支持 v9 的版本。它不会替你修改端口或重新生成验证码，并为已配对 App 提供动作目录和用户主动发起的屏幕、剪贴板及小文件操作。Android 客户端源码完整保留在本仓库；配套 Quicker 动作独立发布，其维护源码不随本仓库分发。
+先从 Quicker 动作库安装配套的 [`Quicker Link`](https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba) 动作。`v0.5.0-alpha.7` App 使用严格的 v9 能力协议，不保留 v8 兼容路径；安装或升级 APK 时必须同时把配套动作更新到支持 v9 的版本。它不会替你修改端口或重新生成验证码，并为已配对 App 提供动作目录和用户主动发起的屏幕、剪贴板及小文件操作。Android 客户端源码完整保留在本仓库；配套 Quicker 动作独立发布，其维护源码不随本仓库分发。
 
 ### 2. 连接手机
 
@@ -75,7 +75,7 @@ Quicker Link 是一个非官方的开源 Android 客户端，通过局域网 `WS
 
 连接成功后打开底部“传输”页面：
 
-- 点开“当前屏幕”会立即进入全屏实时控制，不再提供单独的查看/点击开关。每一帧完成下载和校验后才会请求下一帧，点击后继续监控；实际刷新速度取决于电脑分辨率、Quicker 执行和局域网状况。底部窗口条列出类似 Alt+Tab 的桌面窗口及图标，可以直接切换并继续查看。退出预览、断线或页面离开后不会再派发新帧。
+- 点开“当前屏幕”会立即进入全屏实时控制，不再提供单独的查看/点击开关。每一帧完成下载、校验和解码后才替换当前画面，解码期间继续显示上一帧；点击后继续监控，实际刷新速度取决于电脑分辨率、Quicker 执行和局域网状况。底部窗口条列出类似 Alt+Tab 的可激活桌面窗口及图标，可以直接切换并继续查看。退出预览、断线或页面离开后不会再派发新帧。
 - “文本”统一放在传输页，可以读取电脑剪贴板、清空编辑框、写入电脑剪贴板或粘贴到电脑当前窗口。
 - “发送文件”由 Android 系统文件选择器选取一个文件。电脑默认保存到 Windows 实际“下载 / Quicker Link”，也可在 Quicker Link 配对窗口中改为本机选择的目录。
 - “接收文件”会在电脑上打开系统文件选择窗口，用户确认后才传到手机的“下载 / Quicker Link”。
@@ -103,20 +103,20 @@ App 不内置连续剪贴板监听。如果希望在电脑剪贴板变化时主�
 
 ## 安装预览版
 
-`v0.5.0-alpha.6` 是使用项目专用 Release 密钥签名的早期 prerelease APK，用于测试，不代表已达到稳定生产版质量。GitHub Release 不会发布调试签名或未签名 APK。
+`v0.5.0-alpha.7` 是使用项目专用 Release 密钥签名的早期 prerelease APK，用于测试，不代表已达到稳定生产版质量。GitHub Release 不会发布调试签名或未签名 APK。
 
 升级到本版前，请先或同时从上述动作网页更新配套 `Quicker Link` 动作。旧动作不支持本版严格 v9 协议；App 会提示打开动作网页，但不会代替用户安装或更新 Quicker 动作。
 
-如需首次安装，请从 [Releases](https://github.com/shuimowang/QuickerLink/releases) 同时下载 `quicker-link-v0.5.0-alpha.6-release.apk` 和同名 `.sha256` 文件。首次安装时，Android 可能要求允许安装来自浏览器或文件管理器的应用。
+如需首次安装，请从 [Releases](https://github.com/shuimowang/QuickerLink/releases) 同时下载 `quicker-link-v0.5.0-alpha.7-release.apk` 和同名 `.sha256` 文件。首次安装时，Android 可能要求允许安装来自浏览器或文件管理器的应用。
 
 安装前计算下载文件的 SHA-256，并与 `.sha256` 文件中的 64 位十六进制值逐字符比较：
 
 ```powershell
-(Get-FileHash -Algorithm SHA256 -LiteralPath ".\quicker-link-v0.5.0-alpha.6-release.apk").Hash.ToLowerInvariant()
+(Get-FileHash -Algorithm SHA256 -LiteralPath ".\quicker-link-v0.5.0-alpha.7-release.apk").Hash.ToLowerInvariant()
 ```
 
 ```bash
-sha256sum --check quicker-link-v0.5.0-alpha.6-release.apk.sha256
+sha256sum --check quicker-link-v0.5.0-alpha.7-release.apk.sha256
 ```
 
 校验和只能确认下载内容与发布的字节一致；请仍然仅从项目的 GitHub Release 页获取首个可信版本。
