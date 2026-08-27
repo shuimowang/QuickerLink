@@ -1,0 +1,41 @@
+name: Publish migrated release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: v0.5.0-alpha.10
+      TARGET_SHA: fa205025673e5b6d1848f6347e891e1e930ea117
+      APK_NAME: quicker-link-v0.5.0-alpha.10-release.apk
+      APK_DIGEST: sha256:d63e81dbf1d9dd3b031740f3e7ae010c1e4423f36b9e4d5413504f647e52ecd6
+      CHECKSUM_NAME: quicker-link-v0.5.0-alpha.10-release.apk.sha256
+      CHECKSUM_DIGEST: sha256:f74ad62fee6d501498766edef94d593c099b449818082ee51bc7997491c16b38
+    steps:
+      - name: Validate and publish existing draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq ".[] | select(.tag_name == \"${TAG}\" and .draft == true) | .id")"
+          test -n "${release_id}"
+
+          apk_digest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
+            --jq ".[] | select(.name == \"${APK_NAME}\") | .digest")"
+          checksum_digest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
+            --jq ".[] | select(.name == \"${CHECKSUM_NAME}\") | .digest")"
+          test "${apk_digest}" = "${APK_DIGEST}"
+          test "${checksum_digest}" = "${CHECKSUM_DIGEST}"
+
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${TAG}" \
+            -f sha="${TARGET_SHA}"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F draft=false \
+            -F prerelease=true >/dev/null
