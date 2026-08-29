@@ -6,7 +6,7 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 
 ## 下载
 
-- [下载 v0.5.0-alpha.11 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.11)
+- [下载 v0.5.0-alpha.12 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.12)
 - [查看全部版本](https://github.com/shuimowang/QuickerLink/releases)
 - [安装配套 Quicker Link 动作](https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba)
 
