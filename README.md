@@ -6,7 +6,7 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 
 ## 下载
 
-- [下载 v0.5.0-alpha.14 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.14)
+- [下载 v0.5.0-alpha.15 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.15)
 - [查看全部版本](https://github.com/shuimowang/QuickerLink/releases)
 - [安装配套 Quicker Link 动作](https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba)
 
@@ -46,10 +46,12 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 - 实时查看并点击电脑屏幕，查看和切换桌面窗口
 - 手机与电脑互传文本、通知和不超过 64 MiB 的小文件
 - 可从 Android 系统分享面板直接发送文本、图片和文件到电脑，支持多选文件顺序传输
-- Android 后台连接，可接收电脑主动发来的文本、通知和文件邀请
+- Android 后台连接，自动接收电脑主动发来的文本、通知和文件
 - 睡眠、关机和重启 Quicker 等带二次确认的固定电脑控制
 - 可选 Quicker 官方远程推送模式
 - 应用内手动检查、校验和安装新版本
+
+电脑主动发来的文件默认自动保存到手机“下载 / Quicker Link”，保持局域网后台连接时，切换应用或锁屏也能接收。多个文件按顺序处理，传输页和后台连接通知会显示进度，并支持取消当前接收。需要逐个确认时，可在“连接 → 增强功能”关闭“自动接收电脑文件”。本次 APK 更新继续使用现有配套 Quicker Link 动作。
 
 ## 安全说明
 
