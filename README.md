@@ -6,7 +6,7 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 
 ## 下载
 
-- [下载 v0.5.0-alpha.15 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.15)
+- [下载 v0.5.0-alpha.16 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.16)
 - [查看全部版本](https://github.com/shuimowang/QuickerLink/releases)
 - [安装配套 Quicker Link 动作](https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba)
 
@@ -16,12 +16,12 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 
 ## 开始使用
 
-1. 在 Quicker 的“手机 APP / WebSocket 设置”中启用 WebSocket 服务和安全连接 `WSS`。推荐设置连接验证码，也支持留空。
+1. 在 Quicker 的“HTTP / WebSocket 服务”设置中启用 WebSocket 服务和安全连接 `WSS`。推荐设置连接验证码，也支持留空。
 2. 安装并运行配套的 [Quicker Link 动作](https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba)。
 3. 在手机上扫描动作窗口生成的配对二维码。
 4. 首次连接后，应用会同步 Quicker 新面板中的 `_global` 与 `common` 动作；之后也可以手动刷新。
 
-配套动作按 Quicker `2.2.25` 或更高版本验证。若 Quicker Link 动作页面提示有更新，请先更新动作，再使用新版本 APK。
+本版配套动作以 Quicker `2.3.20.0` 为目标。请先更新 Quicker 和配套动作，再安装新版 APK；本次需要同时更新动作与 App。
 
 局域网连接无需账号或自建服务器。需要在外网使用时，可以在应用中选配 [Quicker 官方远程推送](https://getquicker.net/Member/PushTools)；远程模式适合动作触发和低带宽应急控制，文件传输与流畅屏幕控制仍建议使用局域网连接。
 
@@ -41,17 +41,17 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 ## 主要功能
 
 - 同一局域网自动发现、二维码配对和 `WSS` 加密连接
-- 高密度动作面板，同步动作图标、分组和快捷参数
+- 高密度动作面板，同步动作图标、分组和快捷参数，支持新版 Quicker 文字图标
 - 执行动作、传递参数，以及终止持续运行的动作
 - 实时查看并点击电脑屏幕，查看和切换桌面窗口
 - 手机与电脑互传文本、通知和不超过 64 MiB 的小文件
 - 可从 Android 系统分享面板直接发送文本、图片和文件到电脑，支持多选文件顺序传输
 - Android 后台连接，自动接收电脑主动发来的文本、通知和文件
 - 睡眠、关机和重启 Quicker 等带二次确认的固定电脑控制
-- 可选 Quicker 官方远程推送模式
+- 可选 Quicker 官方远程推送模式；指定电脑离线时保留目标，不自动改发其他电脑
 - 应用内手动检查、校验和安装新版本
 
-电脑主动发来的文件默认自动保存到手机“下载 / Quicker Link”，保持局域网后台连接时，切换应用或锁屏也能接收。多个文件按顺序处理，传输页和后台连接通知会显示进度，并支持取消当前接收。需要逐个确认时，可在“连接 → 增强功能”关闭“自动接收电脑文件”。本次 APK 更新继续使用现有配套 Quicker Link 动作。
+电脑主动发来的文件默认自动保存到手机“下载 / Quicker Link”，保持局域网后台连接时，切换应用或锁屏也能接收。多个文件按顺序处理，传输页和后台连接通知会显示进度，并支持取消当前接收。需要逐个确认时，可在“连接 → 增强功能”关闭“自动接收电脑文件”。多台手机接收同一文件时，完成或取消各自独立；长时间未完成的接收会明确提示重新发送。本次请同时更新配套动作。
 
 ## 安全说明
 
