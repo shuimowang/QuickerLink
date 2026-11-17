@@ -6,7 +6,7 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 
 ## 下载
 
-- [下载 v0.5.0-alpha.16 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.16)
+- [下载 v0.5.0-alpha.17 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.17)
 - [查看全部版本](https://github.com/shuimowang/QuickerLink/releases)
 - [安装配套 Quicker Link 动作](https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba)
 
@@ -21,7 +21,9 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 3. 在手机上扫描动作窗口生成的配对二维码。
 4. 首次连接后，应用会同步 Quicker 新面板中的 `_global` 与 `common` 动作；之后也可以手动刷新。
 
-本版配套动作以 Quicker `2.3.20.0` 为目标。请先更新 Quicker 和配套动作，再安装新版 APK；本次需要同时更新动作与 App。
+本版配套动作以 Quicker `2.3.39.0` 为目标。请先更新 Quicker 和配套动作，再安装新版 APK；本次需要同时更新动作与 App。
+
+`alpha.17` 更新了文件和局域网屏幕的传输方式，单文件上限仍为 64 MiB。新版 App 与新版配套动作需要一起使用；更新后继续使用原来的扫码配对和手动检查更新入口。
 
 局域网连接无需账号或自建服务器。需要在外网使用时，可以在应用中选配 [Quicker 官方远程推送](https://getquicker.net/Member/PushTools)；远程模式适合动作触发和低带宽应急控制，文件传输与流畅屏幕控制仍建议使用局域网连接。
 
@@ -38,6 +40,8 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 
 如果日志显示“电脑拒绝了 WSS 连接”，优先检查 Quicker 服务、端口和防火墙；如果显示证书或主机名验证失败，再检查系统时间以及 VPN/HTTPS 拦截。请不要为了排查而把 WebSocket 端口暴露到公网。
 
+如果动作和文本能用，但文件或局域网屏幕提示“文件数据端口无法连接”，请检查 Windows 防火墙是否允许 Quicker 在当前可信局域网中接收入站连接。新版传输会自动使用额外的动态端口，只放行原连接端口可能不够；无需在 App 中手工填写端口，也不要关闭整个防火墙。校园网若阻止这类连接，可以先用私人路由器或手机热点对照。官方远程推送不提供文件传输。
+
 ## 主要功能
 
 - 同一局域网自动发现、二维码配对和 `WSS` 加密连接
@@ -45,6 +49,7 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 - 执行动作、传递参数，以及终止持续运行的动作
 - 实时查看并点击电脑屏幕，查看和切换桌面窗口
 - 手机与电脑互传文本、通知和不超过 64 MiB 的小文件
+- 文件使用独立的加密传输连接，显示进度、校验完整内容，并支持取消当前传输
 - 可从 Android 系统分享面板直接发送文本、图片和文件到电脑，支持多选文件顺序传输
 - Android 后台连接，自动接收电脑主动发来的文本、通知和文件
 - 睡眠、关机和重启 Quicker 等带二次确认的固定电脑控制
