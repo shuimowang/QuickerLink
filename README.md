@@ -6,11 +6,12 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 
 ## 下载
 
-- [下载 v0.5.0-alpha.17 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.17)
+- [下载 v0.5.0-alpha.18 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.18)
+- [国内备用下载](https://111.229.149.25/public/share/kFe8Tmtj1Xou3V4tLirasg)
 - [查看全部版本](https://github.com/shuimowang/QuickerLink/releases)
 - [安装配套 Quicker Link 动作](https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba)
 
-当前预览版要求 Android 10 或更高版本。APK 使用项目专用 Release 证书签名，每个版本同时提供 SHA-256 校验文件。请只从本仓库的 Releases 页面下载安装。
+当前预览版要求 Android 10 或更高版本。APK 使用项目专用 Release 证书签名，每个版本同时提供 SHA-256 校验文件。国内备用站提供同一份签名安装包。
 
 首次安装时，Android 可能要求允许浏览器或文件管理器“安装未知应用”。应用不会自动更新；请在“关于”页面手动检查、下载，并在 Android 系统安装确认后完成升级。
 
@@ -21,9 +22,9 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 3. 在手机上扫描动作窗口生成的配对二维码。
 4. 首次连接后，应用会同步 Quicker 新面板中的 `_global` 与 `common` 动作；之后也可以手动刷新。
 
-本版配套动作以 Quicker `2.3.39.0` 为目标。请先更新 Quicker 和配套动作，再安装新版 APK；本次需要同时更新动作与 App。
+本版配套动作以 Quicker `2.3.40.0` 为目标。请先更新 Quicker 和配套动作，再安装新版 APK；本次需要同时更新动作与 App。
 
-`alpha.17` 更新了文件和局域网屏幕的传输方式，单文件上限仍为 64 MiB。新版 App 与新版配套动作需要一起使用；更新后继续使用原来的扫码配对和手动检查更新入口。
+使用 `getClipboard` 需要同时更新 Android App 和电脑动作。旧版首次升级可以从本页的国内备用下载入口覆盖安装。此后在“关于”中手动检查更新，GitHub 连接失败时可从国内站点更新。
 
 局域网连接无需账号或自建服务器。需要在外网使用时，可以在应用中选配 [Quicker 官方远程推送](https://getquicker.net/Member/PushTools)；远程模式适合动作触发和低带宽应急控制，文件传输与流畅屏幕控制仍建议使用局域网连接。
 
@@ -57,6 +58,14 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 - 应用内手动检查、校验和安装新版本
 
 电脑主动发来的文件默认自动保存到手机“下载 / Quicker Link”，保持局域网后台连接时，切换应用或锁屏也能接收。多个文件按顺序处理，传输页和后台连接通知会显示进度，并支持取消当前接收。需要逐个确认时，可在“连接 → 增强功能”关闭“自动接收电脑文件”。多台手机接收同一文件时，完成或取消各自独立；长时间未完成的接收会明确提示重新发送。本次请同时更新配套动作。
+
+## 从其他 Quicker 动作调用
+
+在“运行或停止动作”中选择 Quicker Link，将下面任意一项填入命令参数。
+
+- `sendText:开会提前十分钟` 将冒号后的原文发送到手机。
+- `sendFile:D:\Downloads\report.pdf` 发起指定文件的传输。在配对窗口开启“记录收发”后，可以查看发送时间、文件名和大小。
+- `getClipboard` 请求手机当前的纯文本剪贴板。勾选“等待运行结束”，把“动作输出”接到文本变量。手机用户在一分钟内点“读取并发送”后，文本才返回给调用动作。
 
 ## 安全说明
 
