@@ -6,7 +6,7 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 
 ## 下载
 
-- [下载 v0.5.0-alpha.20 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.20)
+- [下载 v0.5.0-alpha.21 APK](https://github.com/shuimowang/QuickerLink/releases/tag/v0.5.0-alpha.21)
 - [国内备用下载](https://111.229.149.25/public/share/kFe8Tmtj1Xou3V4tLirasg)
 - [查看全部版本](https://github.com/shuimowang/QuickerLink/releases)
 - [安装配套 Quicker Link 动作](https://getquicker.net/Sharedaction?code=b02b2732-f087-4e45-416d-08deee3e76ba)
@@ -22,7 +22,7 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 3. 在手机上扫描动作窗口生成的配对二维码。
 4. 首次连接后，应用会同步 Quicker 新面板中的 `_global` 与 `common` 动作；之后也可以手动刷新。
 
-配套动作以 Quicker `2.3.40.0` 为目标。Android `alpha.20` 可配合现有 Quicker Link 动作修订版 41 使用。
+配套动作以 Quicker `2.3.40.0` 为目标。Android `alpha.21` 配合 Quicker Link 动作修订版 42 使用。
 
 已安装的用户可以从国内备用下载入口覆盖安装，或在 App 的“关于”页手动检查更新。
 
@@ -60,7 +60,7 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 
 电脑主动发来的文件默认自动保存到手机“下载 / Quicker Link”，保持局域网后台连接时，切换应用或锁屏也能接收。多个文件按顺序处理，传输页和后台连接通知会显示进度，并支持取消当前接收。需要逐个确认时，可在“连接 → 增强功能”关闭“自动接收电脑文件”。多台手机接收同一文件时，完成或取消各自独立；长时间未完成的接收会明确提示重新发送。
 
-配套动作修订版 41 在主窗口顶部提供“设备配对”和“收发记录”标签。收发记录按“全部 / 文件 / 文本”筛选，展开文件可查看各手机的保存回执，展开文本可查看原文。关闭记录后，已有内容仍可查看和清空。
+配套动作在主窗口顶部提供“设备配对”和“收发记录”标签。收发记录按“全部 / 文件 / 文本”筛选，展开文件可查看各手机的保存回执，展开文本可查看原文。关闭记录后，已有内容仍可查看和清空。
 
 开启“记录收发”后，同一条文件发送记录会就地更新，分别显示各手机回报的“已保存”、型号和确认时间；同型号手机也能区分。只有新版手机 App 完成本地保存后才发送确认，旧版或仅完成传输时不会标成已保存。
 
@@ -72,7 +72,6 @@ Quicker Link 是由困困君发布的非官方 Android 客户端，用手机连�
 
 - `sendText:开会提前十分钟` 将冒号后的原文发送到手机。
 - `sendFile:D:\Downloads\report.pdf` 发起指定文件的传输。在配对窗口开启“记录收发”后，可以查看发送时间、文件名、大小，以及各手机回报的保存确认。
-- `getClipboard` 请求手机剪贴板的纯文本。勾选“等待运行结束”，把“动作输出”接到文本变量。配对手机通过局域网自动回传。App 有焦点时读取当前文本，退到后台后使用同一配对最近一次读到的文本。
 
 ## 安全说明
 
